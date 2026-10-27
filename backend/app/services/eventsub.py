@@ -46,7 +46,7 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
     if event.get("broadcaster_user_id") != broadcaster_id:
         return
     chatter_id = str(event.get("chatter_user_id", ""))
-    if not chatter_id or chatter_id == broadcaster_id:
+    if not chatter_id:
         return
 
     event_id = metadata.get("message_id")
@@ -72,6 +72,11 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
                 db.commit()
     finally:
         db.close()
+
+    # Persist broadcaster chat so the live signal panel can show streamer tests and
+    # context, but never accept broadcaster vote commands.
+    if chatter_id == broadcaster_id:
+        return
 
     match = VOTE_PATTERN.fullmatch(message[:40])
     if not match:

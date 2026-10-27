@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.config import Settings
-from app.schemas import ChallengeProposal
+from app.schemas import ChallengeProposal, GeminiChallengeOutput
 from app.services import challenges
 
 VALID_PROPOSAL = {
@@ -18,6 +18,10 @@ VALID_PROPOSAL = {
 
 @pytest.mark.asyncio
 async def test_gemini_request_uses_pydantic_output_and_marks_source(monkeypatch) -> None:
+    schema = GeminiChallengeOutput.model_json_schema()
+    assert "additionalProperties" not in schema
+    assert "additionalProperties" not in schema["$defs"]["GeminiChallengeOption"]
+
     class Models:
         def generate_content(self, **kwargs):
             assert kwargs["config"]["response_mime_type"] == "application/json"
@@ -60,3 +64,16 @@ async def test_missing_gemini_credentials_do_not_call_provider(monkeypatch) -> N
     monkeypatch.setattr(challenges.genai, "Client", lambda **_: pytest.fail("provider must not be called"))
     result = await challenges.generate_challenge([])
     assert result.source == "fallback"
+
+
+def test_provider_error_log_redacts_key_and_chat_text() -> None:
+    class ProviderError(Exception):
+        message = "invalid key secret-key; rejected viewer words"
+
+    safe = challenges._safe_provider_message(
+        ProviderError(), "secret-key", ["rejected viewer words"]
+    )
+    assert "secret-key" not in safe
+    assert "rejected viewer words" not in safe
+    assert "[REDACTED]" in safe
+    assert "[CHAT REDACTED]" in safe

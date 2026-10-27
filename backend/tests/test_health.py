@@ -13,6 +13,7 @@ def test_status_does_not_expose_secrets():
     body = client.get("/api/status").json()
     assert "gemini_api_key" not in body
     assert "twitch_client_secret" not in body
+    assert body["eventsub_worker"] in {"not_started", "running", "stopped"}
 
 def test_suggestion_returns_labeled_fallback_without_external_call(monkeypatch):
     from app import main

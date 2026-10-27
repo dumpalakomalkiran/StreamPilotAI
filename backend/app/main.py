@@ -91,6 +91,10 @@ async def health() -> HealthResponse:
 
 @app.get("/api/status")
 async def status(db: Session = Depends(get_db)) -> dict[str, object]:
+    eventsub_task = getattr(app.state, "eventsub_task", None)
+    eventsub_worker = "not_started" if eventsub_task is None else (
+        "running" if not eventsub_task.done() else "stopped"
+    )
     return {
         "demo_mode": settings.demo_mode,
         "gemini_configured": bool(settings.gemini_api_key and settings.gemini_model),
@@ -99,6 +103,7 @@ async def status(db: Session = Depends(get_db)) -> dict[str, object]:
             TwitchCredential.auth_session_hash.is_not(None),
             TwitchCredential.auth_session_expires_at > datetime.now(UTC),
         ).limit(1)) is not None,
+        "eventsub_worker": eventsub_worker,
         "integrations_verified": False,
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini."
     }
