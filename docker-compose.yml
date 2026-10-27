@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: .
+    env_file:
+      - backend/.env
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: sqlite:////app/backend/data/streampilot.db
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      TWITCH_REDIRECT_URI: ${TWITCH_REDIRECT_URI:-http://localhost:8080/auth/twitch/callback}
+    volumes:
+      - streampilot-data:/app/backend/data
+    restart: unless-stopped
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  streampilot-data:
