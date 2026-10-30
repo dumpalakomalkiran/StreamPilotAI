@@ -44,6 +44,24 @@ async def test_gemini_request_uses_pydantic_output_and_marks_source(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_gemini_timeout_leaves_margin_before_gateway_deadline(monkeypatch) -> None:
+    class Models:
+        def generate_content(self, **kwargs):
+            return SimpleNamespace(text=json.dumps(VALID_PROPOSAL))
+
+    monkeypatch.setattr(challenges, "get_settings", lambda: Settings(_env_file=None,
+        gemini_api_key="test-only", gemini_model="mock-model", ai_request_timeout_seconds=60
+    ))
+    monkeypatch.setattr(challenges.genai, "Client", lambda **kwargs: (
+        SimpleNamespace(models=Models())
+        if kwargs["http_options"]["timeout"] == 50_000
+        else pytest.fail("provider timeout must leave margin before the gateway deadline")
+    ))
+    result = await challenges.generate_challenge([])
+    assert result.source == "gemini"
+
+
+@pytest.mark.asyncio
 async def test_invalid_gemini_output_uses_labeled_fallback(monkeypatch) -> None:
     class Models:
         def generate_content(self, **kwargs):

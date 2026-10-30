@@ -88,3 +88,15 @@ async def test_oauth_callback_encrypts_tokens_and_records_identity(monkeypatch) 
         twitch_auth._pending_states.pop(state, None)
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+def test_unreadable_stored_token_requires_reauthorization(monkeypatch) -> None:
+    old_settings = Settings(_env_file=None, app_secret_key="previous-secret-key-for-test-123456789")
+    monkeypatch.setattr(twitch_auth, "get_settings", lambda: old_settings)
+    encrypted = twitch_auth.encrypt_token("old-access-token")
+
+    new_settings = Settings(_env_file=None, app_secret_key="rotated-secret-key-for-test-123456789")
+    monkeypatch.setattr(twitch_auth, "get_settings", lambda: new_settings)
+    with pytest.raises(HTTPException) as exc:
+        twitch_auth.decrypt_token(encrypted)
+    assert exc.value.status_code == 401

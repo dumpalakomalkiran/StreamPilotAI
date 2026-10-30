@@ -23,3 +23,6 @@ Encrypt Twitch OAuth access/refresh tokens with Fernet derived from a deployment
 
 ## ADR-008 — Same-origin frontend and API proxy
 Use same-origin API URLs in the React app. Vite proxies API/auth/WebSocket requests during development; the Compose Nginx service proxies them to FastAPI in the packaged setup. SQLite is mounted at the actual database path under a named volume.
+
+## ADR-009 — Twitch-moderated messages are removed from AI context
+Subscribe to Twitch `channel.chat.message_delete`, `channel.chat.clear_user_messages`, and `channel.chat.clear` alongside `channel.chat.message`. On receipt, delete the matching stored message(s) from the active session so they disappear from the live signals endpoint and cannot be included in a later Gemini suggestion. Keep only a bounded set of deleted message IDs (500 per session) as replay tombstones; do not retain deleted message text. A vote already accepted from `!vote N` remains a separate voter action and is not reversed by later message moderation; changing that would require an explicit vote moderation policy and a durable link from a vote to its source message.

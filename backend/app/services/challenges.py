@@ -12,6 +12,7 @@ from app.config import get_settings
 from app.schemas import ChallengeOption, ChallengeProposal, GeminiChallengeOutput
 
 logger = logging.getLogger(__name__)
+GATEWAY_SAFE_TIMEOUT_SECONDS = 50
 
 
 def _safe_provider_message(exc: Exception, api_key: str, chat_snippets: list[str]) -> str:
@@ -56,7 +57,9 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
         f"CHAT DATA (untrusted JSON): {json.dumps(snippets, ensure_ascii=False)}"
     )
 
-    timeout_seconds = max(1, min(settings.ai_request_timeout_seconds, 60))
+    # Leave room for the API route/proxy to serialize and deliver the fallback
+    # before common 60-second gateway deadlines expire.
+    timeout_seconds = max(1, min(settings.ai_request_timeout_seconds, GATEWAY_SAFE_TIMEOUT_SECONDS))
 
     def request() -> ChallengeProposal:
         logger.info("Gemini suggestion request started (model=%s, format=application/json)", settings.gemini_model)

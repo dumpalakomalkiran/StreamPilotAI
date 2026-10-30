@@ -45,6 +45,11 @@ Mock Gemini and Twitch in automated tests; tests must not require API quota or a
 | TC-039 | Duplicate EventSub chat message | Stored once and vote counted once | P0 |
 | TC-040 | OAuth state mismatch | Rejected before token exchange | P0 |
 | TC-041 | OAuth token persistence | Tokens encrypted at rest and absent from API responses | P0 |
+| TC-042 | Twitch deletes one received chat message | Matching stored row disappears from live chat and is excluded from the next Gemini context | P0 |
+| TC-043 | Twitch clears one user's messages | All of that user's rows in the current session are removed; other users remain | P0 |
+| TC-044 | Twitch clears the chat room | All stored messages for the current session are removed | P0 |
+| TC-045 | Duplicate/replayed chat event after deletion | Deleted message remains absent from storage and Gemini context | P0 |
+| TC-046 | OpenAPI / Swagger contract | HTTP operations include summaries, descriptions, bounded request schemas, and representative request/response examples | P1 |
 
 ## Manual end-to-end test
 1. Configure Twitch app and Gemini key locally.

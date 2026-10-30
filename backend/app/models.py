@@ -96,6 +96,14 @@ class ChatMessage(Base):
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class DeletedChatMessage(Base):
+    """Short-lived message ID tombstone to prevent a replay restoring deleted chat."""
+    __tablename__ = "deleted_chat_messages"
+    event_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    deleted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class TwitchCredential(Base):
     __tablename__ = "twitch_credentials"
     broadcaster_id: Mapped[str] = mapped_column(String(80), primary_key=True)

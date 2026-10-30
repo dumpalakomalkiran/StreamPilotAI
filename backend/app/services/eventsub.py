@@ -13,32 +13,122 @@ from websockets.exceptions import ConnectionClosed
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import Challenge, ChatMessage, StreamSession, TwitchCredential
+from app.models import Challenge, ChatMessage, DeletedChatMessage, StreamSession, TwitchCredential
 from app.services.overlay import broadcast
 from app.services.twitch_auth import refresh_access_token_if_needed
 from app.services.voting import cast_vote
 
 EVENTSUB_URL = "wss://eventsub.wss.twitch.tv/ws"
 VOTE_PATTERN = re.compile(r"^\s*!vote\s+([1-4])\s*$", re.IGNORECASE)
+CHAT_SUBSCRIPTION_TYPES = (
+    "channel.chat.message",
+    "channel.chat.message_delete",
+    "channel.chat.clear_user_messages",
+    "channel.chat.clear",
+)
 logger = logging.getLogger(__name__)
 
 
-async def _subscribe(session_id: str, broadcaster_id: str, token: str) -> None:
+async def _subscribe(
+    session_id: str, broadcaster_id: str, token: str, subscription_type: str
+) -> None:
     settings = get_settings()
     async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
         response = await client.post(
             "https://api.twitch.tv/helix/eventsub/subscriptions",
             headers={"Authorization": f"Bearer {token}", "Client-Id": settings.twitch_client_id,
                      "Content-Type": "application/json"},
-            json={"type": "channel.chat.message", "version": "1",
+            json={"type": subscription_type, "version": "1",
                   "condition": {"broadcaster_user_id": broadcaster_id, "user_id": broadcaster_id},
                   "transport": {"method": "websocket", "session_id": session_id}},
         )
         response.raise_for_status()
-        logger.info("Twitch EventSub chat subscription accepted")
+        logger.info("Twitch EventSub subscription accepted (type=%s)", subscription_type)
+
+
+async def _subscribe_chat_events(session_id: str, broadcaster_id: str, token: str) -> None:
+    for subscription_type in CHAT_SUBSCRIPTION_TYPES:
+        await _subscribe(session_id, broadcaster_id, token, subscription_type)
+
+
+def _remember_deleted_messages(db, session_id: int, message_ids: list[str]) -> None:
+    unique_ids = list(dict.fromkeys(
+        message_id[:128] for message_id in message_ids
+        if isinstance(message_id, str) and message_id
+    ))
+    if not unique_ids:
+        return
+    db.execute(sqlite_insert(DeletedChatMessage).values([
+        {"event_id": message_id, "session_id": session_id} for message_id in unique_ids
+    ]).on_conflict_do_nothing(index_elements=[DeletedChatMessage.event_id]))
+    expired = db.scalars(select(DeletedChatMessage.event_id).where(
+        DeletedChatMessage.session_id == session_id
+    ).order_by(DeletedChatMessage.deleted_at.desc(),
+               DeletedChatMessage.event_id.desc()).offset(500)).all()
+    if expired:
+        db.execute(delete(DeletedChatMessage).where(DeletedChatMessage.event_id.in_(expired)))
+
+
+async def _process_chat_removal(
+    broadcaster_id: str, subscription_type: str, payload: dict
+) -> None:
+    event = payload.get("event", {})
+    if event.get("broadcaster_user_id") != broadcaster_id:
+        return
+
+    db = SessionLocal()
+    try:
+        session = db.scalar(select(StreamSession).where(
+            StreamSession.broadcaster_id == broadcaster_id,
+            StreamSession.ended_at.is_(None),
+        ).order_by(StreamSession.id.desc()))
+        if session is None:
+            return
+
+        if subscription_type == "channel.chat.message_delete":
+            message_id = event.get("message_id")
+            if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+                return
+            _remember_deleted_messages(db, session.id, [message_id])
+            result = db.execute(delete(ChatMessage).where(
+                ChatMessage.session_id == session.id,
+                ChatMessage.event_id == message_id,
+            ))
+        elif subscription_type == "channel.chat.clear_user_messages":
+            target_user_id = event.get("target_user_id")
+            if not isinstance(target_user_id, str) or not target_user_id:
+                return
+            affected_ids = db.scalars(select(ChatMessage.event_id).where(
+                ChatMessage.session_id == session.id,
+                ChatMessage.chatter_id == target_user_id[:80],
+            )).all()
+            _remember_deleted_messages(db, session.id, affected_ids)
+            result = db.execute(delete(ChatMessage).where(
+                ChatMessage.session_id == session.id,
+                ChatMessage.chatter_id == target_user_id[:80],
+            ))
+        elif subscription_type == "channel.chat.clear":
+            affected_ids = db.scalars(select(ChatMessage.event_id).where(
+                ChatMessage.session_id == session.id
+            )).all()
+            _remember_deleted_messages(db, session.id, affected_ids)
+            result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
+        else:
+            return
+
+        db.commit()
+        logger.info("Twitch chat removal applied (type=%s, removed_count=%d)",
+                    subscription_type, result.rowcount or 0)
+    finally:
+        db.close()
 
 
 async def _process_notification(broadcaster_id: str, metadata: dict, payload: dict) -> None:
+    subscription_type = metadata.get("subscription_type", "channel.chat.message")
+    if subscription_type != "channel.chat.message":
+        await _process_chat_removal(broadcaster_id, subscription_type, payload)
+        return
+
     event = payload.get("event", {})
     message = event.get("message", {}).get("text", "")
     if not isinstance(message, str):
@@ -57,6 +147,8 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
             StreamSession.ended_at.is_(None),
         ).order_by(StreamSession.id.desc()))
         if session and event_id and isinstance(message, str):
+            if db.get(DeletedChatMessage, str(event_id)[:128]):
+                return
             inserted = db.execute(sqlite_insert(ChatMessage).values(
                 event_id=str(event_id)[:128], session_id=session.id,
                 chatter_id=chatter_id[:80],
@@ -117,6 +209,14 @@ async def run_eventsub(broadcaster_id: str) -> None:
         except HTTPException as exc:
             db.close()
             if exc.status_code == 401:
+                revoked = SessionLocal()
+                try:
+                    current = revoked.get(TwitchCredential, broadcaster_id)
+                    if current:
+                        current.auth_session_hash = None
+                        revoked.commit()
+                finally:
+                    revoked.close()
                 logger.warning("Twitch EventSub authorization expired or was revoked")
                 return
             logger.warning("Twitch EventSub token refresh failed (HTTP %d); retrying", exc.status_code)
@@ -140,13 +240,15 @@ async def run_eventsub(broadcaster_id: str) -> None:
                     if message_type == "session_welcome":
                         logger.info("Twitch EventSub session welcomed")
                         if should_subscribe:
-                            await _subscribe(payload["session"]["id"], broadcaster_id, token)
+                            await _subscribe_chat_events(
+                                payload["session"]["id"], broadcaster_id, token
+                            )
                         should_subscribe = True
                     elif message_type == "session_reconnect":
                         uri = payload["session"]["reconnect_url"]
                         should_subscribe = False
                         break
-                    elif message_type == "notification" and metadata.get("subscription_type") == "channel.chat.message":
+                    elif message_type == "notification" and metadata.get("subscription_type") in CHAT_SUBSCRIPTION_TYPES:
                         await _process_notification(broadcaster_id, metadata, payload)
                     elif message_type == "revocation":
                         revoked = SessionLocal()

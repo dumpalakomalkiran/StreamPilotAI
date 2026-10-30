@@ -10,6 +10,8 @@ from fastapi import (
     Depends,
     FastAPI,
     HTTPException,
+    Path,
+    Query,
     Request,
     WebSocket,
     WebSocketDisconnect,
@@ -24,7 +26,14 @@ from sqlalchemy.orm import Session, selectinload
 from app.config import get_settings
 from app.database import Base, engine, get_db, upgrade_schema
 from app.models import Challenge, ChatMessage, StreamSession, TwitchCredential
-from app.schemas import ChallengeProposal, HealthResponse
+from app.schemas import (
+    ChallengeProposal,
+    ChallengeResponse,
+    ChatMessageResponse,
+    HealthResponse,
+    OverlayTokenResponse,
+    StatusResponse,
+)
 from app.services.challenge_clock import run_challenge_clock
 from app.services.challenges import generate_challenge
 from app.services.eventsub import run_eventsub
@@ -46,7 +55,24 @@ from app.services.voting import (
 settings = get_settings()
 Base.metadata.create_all(bind=engine)
 upgrade_schema()
-app = FastAPI(title="StreamPilot AI API", version="0.1.0")
+app = FastAPI(
+    title="StreamPilot AI API",
+    version="0.1.0",
+    description=(
+        "Streamer-controlled Twitch chat challenges. All `/api` endpoints in live mode "
+        "require the HttpOnly `stream_pilot_session` cookie created by Twitch OAuth. "
+        "Gemini suggestions are generated only on explicit request; every proposal requires approval. "
+        "Secrets and raw provider diagnostics are never returned by these APIs."
+    ),
+    contact={"name": "StreamPilot AI"},
+    openapi_tags=[
+        {"name": "System", "description": "Health and safe integration status."},
+        {"name": "Twitch OAuth", "description": "Broadcaster authorization redirects and callback."},
+        {"name": "Challenges", "description": "Suggest, review, launch, and end streamer-approved challenges."},
+        {"name": "Chat", "description": "Recent live chat signals after Twitch moderation deletions are applied."},
+        {"name": "Overlay", "description": "Create a private browser overlay credential."},
+    ],
+)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
@@ -56,13 +82,22 @@ app.add_middleware(
 )
 
 class SuggestRequest(BaseModel):
-    chat_messages: list[Annotated[str, Field(max_length=500)]] = Field(default_factory=list, max_length=50)
+    model_config = {"json_schema_extra": {"examples": [{"chat_messages": [
+        "Take the left path!", "Maybe save the healing item for the boss."
+    ]}]}}
+    chat_messages: list[Annotated[str, Field(max_length=500)]] = Field(
+        default_factory=list, max_length=50,
+        description="Recent chat context. Each message is treated as untrusted data; maximum 50 messages, 500 characters each.",
+    )
 
 
 class VoteRequest(BaseModel):
-    twitch_user_id: str = Field(min_length=1, max_length=80)
-    option_number: int = Field(ge=1, le=4)
-    event_id: str | None = Field(default=None, max_length=128)
+    model_config = {"json_schema_extra": {"examples": [{
+        "twitch_user_id": "123456789", "option_number": 2, "event_id": "demo-event-001"
+    }]}}
+    twitch_user_id: str = Field(min_length=1, max_length=80, description="Viewer Twitch user ID; demo mode only.")
+    option_number: int = Field(ge=1, le=4, description="One-based option position.")
+    event_id: str | None = Field(default=None, max_length=128, description="Optional idempotency key.")
 
 
 _suggest_requests: dict[str, list[float]] = {}
@@ -85,24 +120,47 @@ def require_streamer(request: Request, db: Session = Depends(get_db)) -> str:
             return credential.broadcaster_id
     raise HTTPException(status_code=401, detail="Connect Twitch to manage challenges")
 
-@app.get("/api/health", response_model=HealthResponse)
+@app.get(
+    "/api/health", response_model=HealthResponse, tags=["System"],
+    summary="Check backend health",
+    description="Unauthenticated liveness check. Does not verify Gemini or Twitch connectivity.",
+    responses={200: {"content": {"application/json": {"example": {
+        "status": "ok", "app": "StreamPilot AI", "mode": "live"
+    }}}}},
+)
 async def health() -> HealthResponse:
     return HealthResponse(status="ok", app="StreamPilot AI", mode="demo" if settings.demo_mode else "live")
 
-@app.get("/api/status")
+@app.get(
+    "/api/status", response_model=StatusResponse, tags=["System"],
+    summary="Read safe integration status",
+    description="Returns configuration and worker booleans only. `integrations_verified` stays false until real-service checks pass.",
+    responses={200: {"content": {"application/json": {"example": {
+        "demo_mode": False, "gemini_configured": True, "twitch_configured": True,
+        "twitch_authorized": True, "eventsub_worker": "running",
+        "integrations_verified": False,
+        "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini.",
+    }}}}},
+)
 async def status(db: Session = Depends(get_db)) -> dict[str, object]:
     eventsub_task = getattr(app.state, "eventsub_task", None)
     eventsub_worker = "not_started" if eventsub_task is None else (
         "running" if not eventsub_task.done() else "stopped"
     )
+    twitch_configured = bool(settings.twitch_client_id and settings.twitch_client_secret)
+    twitch_authorized = (
+        not settings.demo_mode
+        and twitch_configured
+        and db.scalar(select(TwitchCredential.broadcaster_id).where(
+            TwitchCredential.auth_session_hash.is_not(None),
+            TwitchCredential.auth_session_expires_at > datetime.now(UTC),
+        ).limit(1)) is not None
+    )
     return {
         "demo_mode": settings.demo_mode,
         "gemini_configured": bool(settings.gemini_api_key and settings.gemini_model),
-        "twitch_configured": bool(settings.twitch_client_id and settings.twitch_client_secret),
-        "twitch_authorized": db.scalar(select(TwitchCredential.broadcaster_id).where(
-            TwitchCredential.auth_session_hash.is_not(None),
-            TwitchCredential.auth_session_expires_at > datetime.now(UTC),
-        ).limit(1)) is not None,
+        "twitch_configured": twitch_configured,
+        "twitch_authorized": twitch_authorized,
         "eventsub_worker": eventsub_worker,
         "integrations_verified": False,
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini."
@@ -138,7 +196,16 @@ async def lifespan(application: FastAPI):
 
 app.router.lifespan_context = lifespan
 
-@app.post("/api/challenges/suggest", response_model=ChallengeProposal)
+@app.post(
+    "/api/challenges/suggest", response_model=ChallengeProposal, tags=["Challenges"],
+    summary="Generate a challenge suggestion",
+    description="Calls configured Gemini only when explicitly requested. Chat context is untrusted and bounded. The response `source` is `gemini` or a labeled `fallback`; this endpoint never approves or launches the proposal.",
+    responses={
+        200: {"description": "Validated suggestion or labeled fallback."},
+        401: {"description": "Broadcaster session is missing or expired.", "content": {"application/json": {"example": {"detail": "Connect Twitch to manage challenges"}}}},
+        429: {"description": "Per-client suggestion rate limit reached.", "content": {"application/json": {"example": {"detail": "Suggestion limit reached. Try again shortly."}}}},
+    },
+)
 async def suggest_challenge(
     payload: SuggestRequest, request: Request, _streamer: str = Depends(require_streamer)
 ) -> ChallengeProposal:
@@ -159,7 +226,11 @@ async def suggest_challenge(
     return await generate_challenge(safe_messages)
 
 
-@app.get("/auth/twitch")
+@app.get(
+    "/auth/twitch", tags=["Twitch OAuth"], summary="Start Twitch broadcaster authorization",
+    description="Creates an OAuth state cookie and redirects the browser to Twitch. The callback returns to the configured `TWITCH_REDIRECT_URI`.",
+    responses={302: {"description": "Redirect to Twitch authorization."}},
+)
 async def twitch_authorize() -> RedirectResponse:
     url, state = create_authorization_url()
     response = RedirectResponse(url, status_code=302)
@@ -170,10 +241,21 @@ async def twitch_authorize() -> RedirectResponse:
     return response
 
 
-@app.get("/auth/twitch/callback")
+@app.get(
+    "/auth/twitch/callback", tags=["Twitch OAuth"], summary="Complete Twitch authorization",
+    description="Validates OAuth state, exchanges the code server-to-server, stores encrypted tokens, and sets an HttpOnly broadcaster session cookie.",
+    responses={
+        303: {"description": "Redirect back to the dashboard; sets the session cookie."},
+        400: {"description": "OAuth was denied or state/code is incomplete."},
+        401: {"description": "OAuth state is invalid or Twitch authorization expired."},
+        502: {"description": "Twitch authorization service is temporarily unavailable."},
+    },
+)
 async def twitch_callback(
     request: Request,
-    code: str | None = None, state: str | None = None, error: str | None = None,
+    code: str | None = Query(default=None, description="One-time authorization code returned by Twitch."),
+    state: str | None = Query(default=None, description="OAuth state returned by Twitch; must match the HttpOnly state cookie."),
+    error: str | None = Query(default=None, description="OAuth denial code, if the broadcaster declined authorization."),
     db: Session = Depends(get_db),
 ) -> RedirectResponse:
     if error:
@@ -206,7 +288,11 @@ async def twitch_callback(
     return redirect
 
 
-@app.get("/api/challenges")
+@app.get(
+    "/api/challenges", response_model=list[ChallengeResponse], tags=["Challenges"],
+    summary="List challenge history",
+    description="Returns up to the latest 100 challenges belonging to the authenticated broadcaster, newest first.",
+)
 def list_challenges(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)) -> list[dict[str, object]]:
     statement = select(Challenge).join(StreamSession).options(
         selectinload(Challenge.options), selectinload(Challenge.votes)
@@ -217,9 +303,14 @@ def list_challenges(db: Session = Depends(get_db), broadcaster_id: str = Depends
     return [challenge_payload(db, challenge) for challenge in challenges]
 
 
-@app.get("/api/chat/messages")
+@app.get(
+    "/api/chat/messages", response_model=list[ChatMessageResponse], tags=["Chat"],
+    summary="List recent chat signals",
+    description="Returns recent messages for the current live session. Twitch message-delete and clear notifications remove matching rows, so removed messages are excluded from both this response and subsequent Gemini context.",
+)
 def list_chat_messages(
-    limit: int = 50, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
+    limit: int = Query(default=50, ge=1, le=100, description="Maximum messages to return, newest messages selected."),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> list[dict[str, object]]:
     limit = max(1, min(limit, 100))
     session = db.scalar(select(StreamSession).where(
@@ -237,16 +328,26 @@ def list_chat_messages(
     ]
 
 
-@app.post("/api/challenges", status_code=201)
+@app.post(
+    "/api/challenges", status_code=201, response_model=ChallengeResponse, tags=["Challenges"],
+    summary="Create a draft challenge",
+    description="Persists the supplied proposal in the current broadcaster session. New challenges are unapproved drafts and cannot be launched until approved.",
+    responses={201: {"description": "Draft challenge created."}, 401: {"description": "Broadcaster session is missing or expired."}},
+)
 def post_challenge(
     proposal: ChallengeProposal, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
     return challenge_payload(db, create_challenge(db, proposal, broadcaster_id))
 
 
-@app.post("/api/challenges/{challenge_id}/approve")
+@app.post(
+    "/api/challenges/{challenge_id}/approve", response_model=ChallengeResponse, tags=["Challenges"],
+    summary="Approve a draft challenge", description="Explicit streamer approval required before launch.",
+    responses={404: {"description": "Draft not found for this broadcaster."}},
+)
 def approve_challenge(
-    challenge_id: int, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
+    challenge_id: int = Path(ge=1, description="Challenge ID returned by the create or list endpoint."),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
     challenge = loaded_challenge(db, challenge_id)
     if not challenge or challenge.status != "draft":
@@ -259,9 +360,14 @@ def approve_challenge(
     return challenge_payload(db, loaded_challenge(db, challenge_id))
 
 
-@app.post("/api/challenges/{challenge_id}/launch")
+@app.post(
+    "/api/challenges/{challenge_id}/launch", response_model=ChallengeResponse, tags=["Challenges"],
+    summary="Launch an approved challenge", description="Starts its timer and publishes the state to the protected overlay.",
+    responses={404: {"description": "Challenge not found for this broadcaster."}, 409: {"description": "Approval required, challenge is not a draft, or another challenge is active."}},
+)
 async def launch_challenge(
-    challenge_id: int, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
+    challenge_id: int = Path(ge=1, description="Approved draft challenge ID."),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
     challenge = loaded_challenge(db, challenge_id)
     if not challenge:
@@ -291,9 +397,14 @@ async def launch_challenge(
     return challenge_payload(db, active)
 
 
-@app.post("/api/challenges/{challenge_id}/end")
+@app.post(
+    "/api/challenges/{challenge_id}/end", response_model=ChallengeResponse, tags=["Challenges"],
+    summary="End an active challenge", description="Closes the challenge once, calculates the result, updates the overlay, and announces the result in live Twitch chat.",
+    responses={404: {"description": "Challenge not found for this broadcaster."}},
+)
 async def end_challenge(
-    challenge_id: int, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
+    challenge_id: int = Path(ge=1, description="Challenge ID to close."),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
     challenge = loaded_challenge(db, challenge_id)
     if not challenge:
@@ -312,8 +423,16 @@ async def end_challenge(
     return challenge_payload(db, ended)
 
 
-@app.post("/api/challenges/{challenge_id}/votes")
-async def vote(challenge_id: int, payload: VoteRequest, db: Session = Depends(get_db)) -> dict[str, object]:
+@app.post(
+    "/api/challenges/{challenge_id}/votes", response_model=ChallengeResponse, tags=["Challenges"],
+    summary="Cast or change a demo vote", description="Demo-only helper. Live votes are accepted only through Twitch EventSub `!vote N` messages.",
+    responses={403: {"description": "Direct API voting is disabled in live mode."}, 409: {"description": "Vote was not accepted."}},
+)
+async def vote(
+    challenge_id: int = Path(ge=1, description="Active demo challenge ID."),
+    payload: VoteRequest = ...,
+    db: Session = Depends(get_db),
+) -> dict[str, object]:
     if not settings.demo_mode:
         raise HTTPException(status_code=403, detail="Live votes are accepted through Twitch EventSub")
     result = cast_vote(db, challenge_id=challenge_id, twitch_user_id=payload.twitch_user_id,
@@ -327,7 +446,12 @@ async def vote(challenge_id: int, payload: VoteRequest, db: Session = Depends(ge
     return result
 
 
-@app.post("/api/overlay/token")
+@app.post(
+    "/api/overlay/token", response_model=OverlayTokenResponse, tags=["Overlay"],
+    summary="Create a private overlay URL",
+    description="Creates a random bearer token for the current session, stores only its hash, and revokes the prior token. Treat the response URL as a secret.",
+    responses={409: {"description": "Start a session before creating an overlay token."}},
+)
 async def create_overlay_token(
     db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, str]:

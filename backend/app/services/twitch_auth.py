@@ -32,7 +32,7 @@ def decrypt_token(token: str) -> str:
     try:
         return _cipher().decrypt(token.encode("ascii")).decode("utf-8")
     except (InvalidToken, ValueError, UnicodeError) as exc:
-        raise HTTPException(status_code=503, detail="Stored Twitch authorization must be renewed") from exc
+        raise HTTPException(status_code=401, detail="Stored Twitch authorization must be renewed") from exc
 
 
 def create_authorization_url() -> tuple[str, str]:
