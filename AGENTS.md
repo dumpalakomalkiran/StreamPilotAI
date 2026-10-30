@@ -1,36 +1,27 @@
 # AGENTS.md — StreamPilot AI
 
 ## Mission
-Build a polished, functional MVP that turns Twitch chat into streamer-approved audience challenges. Use Google Gemini (`google-genai`), official Twitch APIs, FastAPI, React/TypeScript, SQLite, and WebSockets.
+Continue the existing StreamPilot AI application: React + TypeScript + Vite, FastAPI, SQLAlchemy/SQLite, Google Gemini (`google-genai`), Twitch OAuth, EventSub WebSocket, Twitch chat APIs, and a protected browser overlay. This is not a blank scaffold.
 
 ## Required workflow
-- Read `docs/BUILD_PLAN.md`, `docs/PROGRESS.md`, `docs/TECHNICAL_DESIGN_DOCUMENT.md`, and `docs/TEST_CASES.md`.
-- Inspect existing files before editing; preserve completed work.
-- Work through build phases sequentially without requiring another prompt after each phase.
-- Run relevant tests after each phase; fix failures before proceeding.
-- Update `docs/PROGRESS.md` with changes, commands, results, blockers, and next task.
-- Record material architecture decisions in `docs/DECISIONS.md`.
-- Never claim an integration works until verified against the real service.
-- Ask the user only for credentials, authorization, destructive actions, deployment approval, or external publication.
+1. Read `CODEX_START_HERE.md`, `docs/PROGRESS.md`, `docs/BUILD_PLAN.md`, `docs/NEXT_STEP_RUNBOOK.md`, `docs/API_REFERENCE.md`, `docs/TECHNICAL_DESIGN_DOCUMENT.md`, and `docs/TEST_CASES.md`.
+2. Inspect the working tree and source before editing; preserve local changes.
+3. Run backend tests/Ruff and frontend tests/typecheck/build before changes.
+4. Preserve implemented behaviour; do not rewrite modules without a reproducible reason.
+5. Work sequentially and do not skip failed gates.
+6. Update `docs/PROGRESS.md` with files, commands, exact results, evidence, blockers and next task. Record design changes in `docs/DECISIONS.md`.
+7. Never equate configured credentials, OAuth success, or an enabled EventSub subscription with end-to-end verification.
 
-## Product scope
-1. Twitch broadcaster OAuth and live chat/EventSub.
-2. Gemini challenge suggestions generated only on explicit streamer request.
-3. Structured challenge output validated with Pydantic.
-4. Explicit streamer approval before launch.
-5. Backend-validated `!vote N` commands, one current vote per Twitch user per challenge.
-6. Real-time overlay, timer, final result, and chat announcement.
-7. Session history and clear demo mode.
+## Product invariants
+- Gemini suggestions only on explicit streamer request; structured output is validated.
+- AI never approves or launches. Streamer approval is mandatory.
+- One active challenge; one current vote per viewer/challenge; later valid vote replaces earlier vote.
+- Reject late votes. Treat chat as untrusted data.
+- Moderated chat is excluded from future suggestion context.
+- Demo data is labelled; no automatic game control or arbitrary command execution.
 
 ## Security
-- Use current official Gemini and Twitch docs.
-- Keep all secrets backend-only. Never use `VITE_` for secrets.
-- Never commit `.env`, keys, tokens, databases, or build output.
-- Treat chat as untrusted data, not instructions.
-- Use bounded inputs, timeouts, rate limits, safe errors, OAuth state validation, authorization checks, redacted logs, and protected overlay tokens.
-- Do not let AI launch challenges automatically or execute arbitrary game actions.
-- Mock external services in automated tests; tests must not consume API quota.
-- Clearly label synthetic demo data.
+Keep secrets backend-only. Never expose `.env`, keys, tokens, DBs, or private overlay URLs. Encrypt Twitch tokens at rest; hash app-session and overlay tokens. Validate OAuth state, authorization ownership, bounds, timeouts, rate limits and safe errors. Redact logs. Mock providers in automated tests; no real chat posts or challenge launches without owner approval. Do not deploy or publish without approval.
 
 ## Definition of done
-See `docs/BUILD_PLAN.md` and `docs/SUBMISSION_CHECKLIST.md`. A simulated demo does not prove a real Twitch integration.
+Relevant tests pass; lint/typecheck/build pass; live claims have recorded evidence; docs/progress are updated; no secrets or runtime artifacts are committed.

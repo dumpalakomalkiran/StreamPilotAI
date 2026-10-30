@@ -1,62 +1,25 @@
-# Technical Design Document (TDD) — StreamPilot AI
+# Technical Design Document — StreamPilot AI
 
-## 1. Scope and status
-This document describes the current MVP implementation and target behavior. Automated service tests use mocks; Gemini and Twitch live behavior remains unverified until tested with authorized real accounts.
+## Status
+Describes source visible in reviewed commit. Live provider behaviour remains unverified until observed end-to-end.
 
-## 2. Stack
-React, TypeScript, Vite; Python 3.12+, FastAPI, Pydantic; SQLAlchemy + SQLite; `google-genai`; official Twitch OAuth, EventSub WebSocket and chat APIs; FastAPI WebSockets; pytest/HTTPX and Vitest/React Testing Library.
+## Stack and modules
+React 18/TypeScript/Vite; FastAPI/Pydantic 2; SQLAlchemy 2/SQLite; `google-genai`; Twitch OAuth/Helix/EventSub WebSocket; FastAPI WebSocket; pytest/Vitest. `main.py` owns routes/lifecycle; `config.py` settings; `database.py` engine/schema; `models.py` ORM; `schemas.py` contracts; services split Gemini, OAuth, EventSub, chat send, voting, timer and overlay.
 
-## 3. Modules
-`main.py`: app, middleware, and REST routes. `config.py`: environment settings. `models.py`: ORM. `schemas.py`: request validation. `services/challenges.py`: Gemini. `services/twitch_auth.py`: OAuth. `services/eventsub.py`: WebSocket lifecycle and chat ingestion. `services/twitch_chat.py`: send chat. `services/voting.py`: vote and tally logic. `services/overlay.py`: realtime fan-out.
+## Data model
+`StreamSession`; `Challenge`; `ChallengeOption`; `Vote` unique on `(challenge_id,twitch_user_id)`; `ProcessedEvent`; `ChatMessage`; `DeletedChatMessage` tombstones; `TwitchCredential` with encrypted access/refresh tokens, scopes/expiry and hashed app-session state.
 
-## 4. Data model
-- StreamSession: ID, broadcaster ID/login, start/end timestamps, demo/live mode.
-- Challenge: ID, session ID, title/question/reason, status, duration, source, start/end/completion timestamps, winning option.
-- ChallengeOption: ID, challenge ID, label, description, order.
-- Vote: ID, challenge ID, option ID, Twitch user ID, update timestamp. Unique constraint on `(challenge_id, twitch_user_id)`.
-- TwitchCredential: broadcaster ID, server-side token fields, scopes, expiry. Never serialize credentials to public APIs.
-- ChatMessage: bounded recent messages for a stream session, keyed by EventSub message ID to avoid duplicate storage. Twitch delete, per-user clear, and full-chat clear notifications remove affected active-session rows before the next API/Gemini read. A bounded set of message-ID tombstones prevents a replay from restoring removed chat.
+## Invariants
+One active challenge; draft requires explicit approval; one current vote per viewer/challenge; later valid vote replaces earlier; reject votes at/after deadline; closure is conditional/atomic; tie/no votes yields no winning option; broadcaster chat cannot vote; duplicate EventSub messages are not double-counted.
 
-## 5. API contract (target)
-- `GET /api/health`
-- `GET /api/status` (booleans only, no secrets)
-- `GET /auth/twitch`, `GET /auth/twitch/callback`
-- `POST /api/challenges/suggest`
-- `POST /api/challenges`
-- `POST /api/challenges/{id}/approve`
-- `POST /api/challenges/{id}/launch`
-- `POST /api/challenges/{id}/end`
-- `POST /api/challenges/{id}/votes` (demo only)
-- `GET /api/challenges`
-- `GET /api/chat/messages?limit=50` (moderated/deleted messages are omitted)
-- `POST /api/overlay/token` (returns one private overlay URL; token is stored only as a hash)
-- `WS /ws/overlay` (overlay token is passed as a WebSocket subprotocol, not a URL path)
+## Gemini boundary
+Only explicit streamer invocation. At most 50 chat messages, each max 500 chars, treated as untrusted data. Structured response validated to title/question/reason, 2–4 options and 15–60 seconds. Backend assigns source. Fallback is labelled. Confirm model availability and installed SDK compatibility; historical model names are not authoritative.
 
-Swagger UI at `/docs` includes summaries, auth/behavior details, bounded field constraints, and representative request/response examples. The full prose contract and sample payloads are in [API_REFERENCE.md](./API_REFERENCE.md). WebSocket behavior is described there because OpenAPI/Swagger documents HTTP operations, not WebSocket message frames.
+## Twitch boundary
+OAuth authorization-code flow; state validation; broadcaster identity lookup; encrypted tokens and refresh. Current code defaults to `user:read:chat user:write:chat`. Validate exact current scope, token type, sender/broadcaster identity and subscription conditions against Twitch docs before changing. EventSub subscriptions: `channel.chat.message`, `.message_delete`, `.clear_user_messages`, `.clear`. Subscription acceptance is not delivery proof.
 
-## 6. Gemini generation
-Only call when the streamer requests a suggestion. Bound chat message count/length. Treat messages as untrusted data, not instructions. Use structured output through the current `google-genai` SDK, validate with Pydantic, require 2–4 options and 15–60 seconds, and handle timeout/invalid output safely. Fallback must be labeled `fallback`, never AI-generated. Keep `GEMINI_API_KEY` backend-only and configure model via `GEMINI_MODEL`.
+## API and overlay
+HTTP routes: `/api/health`, `/api/status`, `/auth/twitch`, `/auth/twitch/callback`, `/api/challenges/suggest`, `/api/challenges`, `/api/challenges/{id}/approve|launch|end`, demo-only `/api/challenges/{id}/votes`, `/api/chat/messages`, `/api/overlay/token`; WebSocket `/ws/overlay`. See `API_REFERENCE.md` and runtime OpenAPI. Events include `connection.status`, `challenge.started`, `vote.updated`, `challenge.completed`.
 
-Official docs: https://ai.google.dev/gemini-api/docs and https://ai.google.dev/gemini-api/docs/structured-output
-
-## 7. Twitch integration
-Register app and exact callback. Use authorization-code OAuth with cryptographically random state and minimum required scopes. Handle EventSub welcome, notification, keepalive, reconnect, revocation, and error events. Deduplicate using message IDs. Send chat through official API and correct permissions. Handle token expiry/revocation. Redact tokens from logs.
-
-The worker subscribes to chat messages, single-message deletions, per-user message clears, and full chat clears. Moderated text is removed before future dashboard/Gemini reads; a bounded message-ID tombstone set prevents EventSub message replay from restoring it. An already accepted `!vote N` remains a separate action if its source chat message is later removed.
-
-Official docs: https://dev.twitch.tv/docs/authentication/ ; https://dev.twitch.tv/docs/chat/ ; https://dev.twitch.tv/docs/eventsub/handling-websocket-events/ ; https://dev.twitch.tv/docs/eventsub/eventsub-subscription-types/ ; https://dev.twitch.tv/docs/api/reference/
-
-## 8. Voting algorithm
-Confirm active challenge and deadline; ignore broadcaster's own messages; validate `!vote N`; deduplicate EventSub messages; store at most 500 recent chat messages per session; upsert vote by challenge and Twitch user ID; broadcast totals; close atomically; reject late votes; apply documented tie handling; announce once.
-
-## 9. WebSocket events
-`challenge.started`: safe challenge display fields and ends_at. `vote.updated`: counts, percentages, total. `challenge.completed`: result or tie. `connection.status`: connection state. `error`: safe code and user-readable message. Never send credentials or private metadata.
-
-## 10. Security
-Backend-only secrets; OAuth state validation; strict CORS; HTTPS in production; CSRF protection where cookies are used; Pydantic validation; authorization for state changes; rate limits; random overlay tokens; redacted logs; bounded untrusted AI context; no arbitrary game control.
-
-## 11. Testing
-Mock Gemini and Twitch for ordinary tests. Cover schema, votes, duplicate events, message delete/user clear/full clear notifications, deleted-message replay protection, concurrency, OAuth state, reconnects, OpenAPI examples, WebSocket events, and frontend actions. Manually verify real OAuth, chat moderation removal, overlay, and announcement before submission.
-
-## 12. Deployment
-Use HTTPS, persistent DB, correct callback URL, strict origins, WebSocket-capable host, environment variables, health checks, and explicit approval before deployment.
+## Risks/limitations
+`APP_SECRET_KEY` rotation makes prior Fernet ciphertext unreadable absent re-encryption. Rate limiter, worker and WebSocket registry are process-local; MVP assumes one backend process. SQLite additive schema updates are not a full migration system. Overlay URL is bearer credential. Validate all broadcaster/session ownership paths, cookies/CSRF/CORS and demo-mode production safety.
