@@ -4,6 +4,7 @@ import { api, type AppStatus, type Challenge, type ChallengeProposal, type ChatM
 import Overlay from "./Overlay";
 import SmartQueue from "./SmartQueue";
 import PollSuggestions from "./PollSuggestions";
+import Insights from "./Insights";
 import "./chat.css";
 import "./smart-queue.css";
 
@@ -39,12 +40,14 @@ function Dashboard() {
   const [chatFeedError, setChatFeedError] = useState("");
   const [votes, setVotes] = useState([65, 35]);
   const [help, setHelp] = useState(false);
+  const [summarySessionId, setSummarySessionId] = useState<number | null>(null);
   const chatListRef = useRef<HTMLDivElement>(null);
   const nav = [
     { label: "Overview", icon: LayoutDashboard },
     { label: "Live Studio", icon: MonitorPlay },
     { label: "Overlay Setup", icon: Radio },
     { label: "Activity", icon: Activity },
+    { label: "Insights", icon: Gauge },
     { label: "Settings", icon: Settings },
   ];
   const total = votes[0] + votes[1];
@@ -132,6 +135,15 @@ function Dashboard() {
         return;
       }
     }
+    try {
+      const result = await api.endCurrentSession();
+      setSummarySessionId(result.session_id);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("No active session")) {
+        setApiError(error instanceof Error ? error.message : "Session could not be ended.");
+        return;
+      }
+    }
     setLaunched(false);
   }
   async function requestSuggestion() {
@@ -184,7 +196,7 @@ function Dashboard() {
         <PollSuggestions onCountChange={setPollSuggestionCount} onError={setApiError} onStarted={(challenge)=>{setChallengeId(challenge.id);setCurrentChallenge(challenge);setCurrentChallengeIsPoll(true);setVotes(challenge.options.map(option=>option.votes));setLaunched(true);}}/>
         <section className="bottom-grid"><div className="panel vote-panel"><div className="panel-heading"><div><div className="panel-title"><Trophy size={17}/> {currentChallengeIsPoll&&currentChallenge?.status==="completed"?"Audience poll results":"Audience vote"}</div><p>{currentChallenge?.status === "active" ? "Live totals from the backend" : currentChallenge?.status === "completed" ? "Final results from the existing vote records" : "Sample preview until a challenge is active"}</p></div><span className={`vote-state ${currentChallenge?.status === "active"?"state-live":""}`}><span/>{currentChallenge?.status?.toUpperCase() ?? "PREVIEW"}</span></div>{voteOptions.map((option,index)=><Vote key={option.label} label={option.label} count={option.votes ?? votes[index] ?? 0} total={currentChallenge?.total_votes ?? total} color={index===0?"purple-fill":"slate-fill"}/>) }<div className="vote-summary"><span><Users size={15}/>{currentChallenge?.total_votes ?? total} {currentChallenge ? "backend votes" : "sample votes"}</span>{currentChallenge?.status==="completed"&&currentChallengeIsPoll&&<strong>{currentChallenge.winning_option_id===null?"Tie · no winning option":`Winner: ${currentChallenge.options.find(option=>option.id===currentChallenge.winning_option_id)?.label ?? "Final result"}`}</strong>}{!currentChallenge && <button onClick={()=>setVotes(v=>[v[0]+1,v[1]])}>Simulate preview vote</button>}</div></div><div className="panel safety-panel"><div className="panel-heading"><div><div className="panel-title"><ShieldCheck size={17}/> Streamer controls</div><p>Keep your stream in control</p></div></div><Safety title="Approval required" text="AI suggestions never launch automatically."/><Safety title="Vote validation" text="Backend validates chat commands and timing."/><Safety title="Emergency stop" text="End active interactions at any time."/></div></section>
         <footer className="page-footer"><span><span className="footer-dot"/> StreamPilot AI <span>·</span> Local starter preview</span><span>Built for creators, powered by community.</span></footer>
-        </> : <WorkspacePage activeNav={activeNav} status={appStatus} overlayUrl={overlayUrl} onGenerateOverlay={generateOverlayLink} />}
+        </> : activeNav === "Insights" ? <Insights sessionId={summarySessionId}/> : <WorkspacePage activeNav={activeNav} status={appStatus} overlayUrl={overlayUrl} onGenerateOverlay={generateOverlayLink} />}
       </div>
     </main>
   </div>;

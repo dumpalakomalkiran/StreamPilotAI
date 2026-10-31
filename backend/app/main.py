@@ -38,10 +38,12 @@ from app.models import (
     Interaction,
     InteractionGroup,
     PollSuggestion,
+    SessionSummary,
     StreamSession,
     TwitchCredential,
 )
 from app.schemas import (
+    AnalyticsResponse,
     ChallengeProposal,
     ChallengeResponse,
     ChatMessageResponse,
@@ -53,10 +55,17 @@ from app.schemas import (
     PollSuggestionApproval,
     PollSuggestionResponse,
     ResponseSuggestionResponse,
+    SessionSummaryRequest,
+    SessionSummaryResponse,
     SnoozeInteractionRequest,
     StatusResponse,
     StreamFactsRequest,
     StreamFactsResponse,
+)
+from app.services.analytics import (
+    current_analytics,
+    generate_summary_async,
+    generate_summary_background,
 )
 from app.services.challenge_clock import run_challenge_clock
 from app.services.challenges import generate_challenge
@@ -346,6 +355,89 @@ def list_challenges(db: Session = Depends(get_db), broadcaster_id: str = Depends
         statement = statement.where(StreamSession.broadcaster_id == broadcaster_id)
     challenges = db.scalars(statement).all()
     return [challenge_payload(db, challenge) for challenge in challenges]
+
+
+@app.get("/api/analytics/current", response_model=AnalyticsResponse, tags=["Analytics"],
+         summary="Read live community analytics",
+         description="Returns counts for the authenticated broadcaster's current session and a 30-minute message histogram. Counts reflect persisted, moderation-filtered chat.")
+def analytics_current(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    return current_analytics(db, broadcaster_id)
+
+
+@app.post("/api/analytics/current/end", response_model=SessionSummaryResponse, tags=["Analytics"],
+          summary="End the current stream session",
+          description="Closes the broadcaster's active session and schedules its cached recap after returning. Recap generation never delays this response.")
+def end_current_session(background_tasks: BackgroundTasks, db: Session = Depends(get_db),
+                        broadcaster_id: str = Depends(require_streamer)):
+    session = db.scalar(select(StreamSession).where(StreamSession.broadcaster_id == broadcaster_id,
+                                                      StreamSession.ended_at.is_(None)).order_by(StreamSession.id.desc()))
+    if session is None:
+        raise HTTPException(status_code=404, detail="No active session")
+    session.ended_at = datetime.now(UTC)
+    summary_row = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session.id,
+                                                          SessionSummary.broadcaster_id == broadcaster_id))
+    if summary_row is None:
+        summary_row = SessionSummary(broadcaster_id=broadcaster_id, session_id=session.id,
+                                     content=None, status="pending", model="pending")
+        db.add(summary_row)
+    else:
+        summary_row.status = "pending"
+    db.commit()
+    background_tasks.add_task(generate_summary_background, broadcaster_id, session.id)
+    background_tasks.add_task(dashboard_broadcast, broadcaster_id, {"type": "session.ended"})
+    cached = summary_row
+    return {"session_id": session.id, "status": cached.status if cached else "pending",
+            "generated_at": cached.generated_at if cached else None, "content": cached.content if cached else None}
+
+
+@app.get("/api/analytics/sessions/{session_id}/summary", response_model=SessionSummaryResponse,
+         tags=["Analytics"], summary="Read a cached stream recap",
+         description="Returns the generated recap, or a not_generated status while no recap is cached. This read never calls Gemini.")
+def get_session_summary(session_id: int, db: Session = Depends(get_db),
+                        broadcaster_id: str = Depends(require_streamer)):
+    session = db.scalar(select(StreamSession).where(StreamSession.id == session_id,
+                                                     StreamSession.broadcaster_id == broadcaster_id))
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id,
+                                                     SessionSummary.broadcaster_id == broadcaster_id))
+    if cached is None:
+        return {"session_id": session_id, "status": "not_generated", "content": None}
+    return {"session_id": session_id, "status": cached.status,
+            "generated_at": cached.generated_at, "content": cached.content}
+
+
+@app.get("/api/analytics/latest-summary", response_model=SessionSummaryResponse,
+         tags=["Analytics"], summary="Read the latest stream recap",
+         description="Returns the authenticated broadcaster's latest cached recap, including one generated after Twitch reports the stream offline.")
+def get_latest_session_summary(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    cached = db.scalar(select(SessionSummary).where(SessionSummary.broadcaster_id == broadcaster_id)
+                       .order_by(SessionSummary.generated_at.desc()).limit(1))
+    if cached is None:
+        raise HTTPException(status_code=404, detail="No recap is available yet")
+    return {"session_id": cached.session_id, "status": cached.status,
+            "generated_at": cached.generated_at, "content": cached.content}
+
+
+@app.post("/api/analytics/sessions/{session_id}/summary", response_model=SessionSummaryResponse,
+          tags=["Analytics"], summary="Generate or retrieve a stream recap",
+          description="Uses only stored aggregate analytics, poll results, and the top queue groups; never sends full raw chat. Cached unless regenerate=true.")
+async def post_session_summary(session_id: int, payload: SessionSummaryRequest = SessionSummaryRequest(),
+                               db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    session = db.scalar(select(StreamSession).where(StreamSession.id == session_id,
+                                                     StreamSession.broadcaster_id == broadcaster_id))
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id,
+                                                     SessionSummary.broadcaster_id == broadcaster_id))
+    if cached is not None and (not payload.regenerate or cached.status == "pending"):
+        return {"session_id": session_id, "status": cached.status,
+                "generated_at": cached.generated_at, "content": cached.content}
+    try:
+        return await generate_summary_async(broadcaster_id, session_id, payload.regenerate)
+    except Exception as exc:
+        logger.warning("Explicit session summary generation failed (session=%s, error=%s)", session_id, type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Session recap could not be generated. Try again later.") from exc
 
 
 @app.get(

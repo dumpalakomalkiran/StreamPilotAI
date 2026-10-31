@@ -187,6 +187,18 @@ class PollSuggestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SessionSummary(Base):
+    __tablename__ = "session_summaries"
+    __table_args__ = (UniqueConstraint("session_id", name="uq_session_summary_session"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    content: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="complete")
+    model: Mapped[str] = mapped_column(String(120), default="local-empty")
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class DeletedChatMessage(Base):
     """Short-lived message ID tombstone to prevent a replay restoring deleted chat."""
     __tablename__ = "deleted_chat_messages"

@@ -48,6 +48,10 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T42 | Poll safeguards | Cooldown, active challenge, and a pending suggestion suppress a new poll while grouping remains available |
 | T43 | Poll lifecycle and scoping | Broadcaster can list/dismiss; edited approval creates an existing challenge draft, then existing approve/launch/vote path counts option five; foreign broadcaster gets 404 |
 | T44 | Poll UI and results | UI renders supporting snippets, editable options/duration, count badge and actions; completion view uses existing challenge tallies |
+| T45 | Analytics fixture | Live counts, unique chatters, question groups, answer duration, poll decisions, top items, and exactly 30 minute buckets are computed from fixture rows |
+| T46 | Recap generation and cache | Mock structured Gemini output is validated; default repeat returns cache; explicit regenerate may issue one new call |
+| T47 | Empty recap | Empty session receives deterministic zero-activity recap without calling Gemini |
+| T48 | Session end and recap | End closes only the authenticated broadcaster's active session, responds pending, schedules recap; foreign session is 404 |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.

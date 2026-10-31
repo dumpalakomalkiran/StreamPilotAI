@@ -34,3 +34,6 @@ The same periodic batched Gemini queue-grouping call can identify competing view
 
 ## AI poll suggestions — implementation added
 The same periodic batched Gemini queue-grouping call can identify competing viewer preferences and emit a validated broadcaster/session-scoped suggestion. Server-side evidence thresholds, active-challenge checks, pending-draft suppression, recent deduplication and a configurable cooldown apply. A streamer edits and approves; the API creates the existing Challenge draft and the UI continues through its normal approve/launch calls. `!vote N` supports positions 1–5; timer, overlay and results are reused. No Twitch native poll integration is used.
+
+## Community Intelligence — implementation added
+The Insights view uses authenticated live analytics and a lightweight 30-minute messages/minute chart, top unanswered questions, and a copyable post-stream recap. `SessionSummary` is cached; Gemini receives only aggregate statistics, poll/challenge results and bounded canonical group summaries. End-session and Twitch stream-offline paths schedule recap generation after closing the session; an explicit `regenerate=true` request is required to bypass the cache. Empty streams receive a local recap with no Gemini call. See `PROGRESS.md` for test and build evidence.

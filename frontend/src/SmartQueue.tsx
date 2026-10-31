@@ -91,6 +91,27 @@ export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
     } finally { setBusy(null); }
   }
 
+  async function discardReply(itemId: number) {
+    const suggestion = replies[itemId]?.suggestion;
+    if (!suggestion) return;
+    try {
+      await api.discardResponse(suggestion.id);
+      setReplies((current) => {
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+    } catch (error) {
+      setReplies((current) => ({
+        ...current,
+        [itemId]: {
+          ...current[itemId],
+          error: error instanceof Error ? error.message : "Draft could not be discarded.",
+        },
+      }));
+    }
+  }
+
   function cardKeys(event: KeyboardEvent<HTMLElement>, item: InteractionGroup) {
     if (event.target !== event.currentTarget || item.status !== "open") return;
     const key = event.key.toLowerCase();
@@ -122,7 +143,7 @@ export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
           <textarea id={`reply-${item.id}`} maxLength={500} value={replies[item.id].text} onChange={(event) => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], text: event.target.value } }))}/>
           <div className="reply-meta"><span>{replies[item.id].text.length}/500 characters · {replies[item.id].suggestion.model}</span><span>AI never sends automatically</span></div>
           {replies[item.id].error && <p role="alert" className="reply-error">{replies[item.id].error}</p>}
-          <div className="reply-actions"><button onClick={() => void navigator.clipboard.writeText(replies[item.id].text).catch(() => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], error: "Clipboard access is unavailable in this browser." } })))}><Copy size={13}/> Copy</button><button className="send-reply" disabled={busy === item.id || !replies[item.id].text.trim()} onClick={() => void sendReply(item)}><Send size={13}/> Send to chat</button><button onClick={() => { void api.discardResponse(replies[item.id].suggestion.id).then(() => setReplies((current) => { const next = { ...current }; delete next[item.id]; return next; })).catch((error: unknown) => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], error: error instanceof Error ? error.message : "Draft could not be discarded." } })); }}>Discard</button></div>
+          <div className="reply-actions"><button onClick={() => void navigator.clipboard.writeText(replies[item.id].text).catch(() => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], error: "Clipboard access is unavailable in this browser." } })))}><Copy size={13}/> Copy</button><button className="send-reply" disabled={busy === item.id || !replies[item.id].text.trim()} onClick={() => void sendReply(item)}><Send size={13}/> Send to chat</button><button onClick={() => void discardReply(item.id)}>Discard</button></div>
         </div>}
         {replies[item.id]?.sent && <p className="reply-sent" role="status"><Check size={14}/> Answered · reply sent to chat</p>}
         {replies[item.id]?.error && !replies[item.id]?.suggestion && <p className="reply-error" role="alert">{replies[item.id].error}</p>}

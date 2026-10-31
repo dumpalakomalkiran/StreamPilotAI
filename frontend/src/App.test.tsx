@@ -4,6 +4,7 @@ import App from "./App";
 import { api } from "./api";
 
 vi.mock("./api", () => ({
+  websocketUrl: "ws://localhost",
   api: {
     getStatus: vi.fn(() => Promise.resolve({
       demo_mode: true,
@@ -12,6 +13,11 @@ vi.mock("./api", () => ({
       twitch_authorized: false,
       integrations_verified: false,
     })),
+    getCurrentAnalytics: vi.fn(() => Promise.resolve({ session_id: null, total_messages: 0, unique_chatters: 0, questions_detected: 0, groups_open: 0, groups_answered: 0, groups_dismissed: 0, average_time_to_answer_seconds: null, top_open_groups: [], top_unanswered_questions: [], poll_suggestions_approved: 0, poll_suggestions_dismissed: 0, messages_per_minute: [] })),
+    getLatestSessionSummary: vi.fn(() => Promise.reject(new Error("No recap"))),
+    getSessionSummary: vi.fn(() => Promise.resolve({ session_id: 1, status: "pending", generated_at: null, content: null })),
+    generateSessionSummary: vi.fn(),
+    endCurrentSession: vi.fn(() => Promise.resolve({ session_id: 1, status: "pending", generated_at: null, content: null })),
     createChallenge: vi.fn(),
     approveChallenge: vi.fn(),
     launchChallenge: vi.fn(),
@@ -76,7 +82,7 @@ describe("StreamPilot starter dashboard", () => {
     render(<App />);
     expect(await screen.findByText("Which GPU are you using?")).toBeInTheDocument();
     sockets[0]?.onopen?.();
-    expect(screen.getByRole("status", { name: /live updates/i })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Live updates")).toBeInTheDocument());
     sockets[0]?.onmessage?.({ data: JSON.stringify({ type: "interaction.updated" }) });
     expect(api.listInteractions).toHaveBeenCalled();
     expect(screen.getByText("4 viewers · 6 messages")).toBeInTheDocument();
@@ -144,7 +150,7 @@ describe("StreamPilot starter dashboard", () => {
     }
     vi.stubGlobal("WebSocket", MockSocket);
     render(<App />);
-    expect(await screen.findByText("Ranked or casual?")).toBeInTheDocument();
+    expect(await screen.findByDisplayValue("Ranked or casual?")).toBeInTheDocument();
     expect(screen.getByText("ViewerA")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("POLL TITLE"), { target: { value: "What should we play?" } });
     fireEvent.change(screen.getByLabelText("Poll option 2"), { target: { value: "Casual co-op" } });
@@ -155,7 +161,7 @@ describe("StreamPilot starter dashboard", () => {
       title: "What should we play?", options: ["Ranked", "Casual co-op"], duration_seconds: 45,
     });
     expect(api.approveChallenge).toHaveBeenCalledWith(71);
-    expect(await screen.findByText("What should we play?")).toBeInTheDocument();
+    expect(await screen.findByText(/Challenge launched through the backend/i)).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
   it("dismisses poll suggestions and shows the queue badge count", async () => {
@@ -174,8 +180,23 @@ describe("StreamPilot starter dashboard", () => {
     vi.stubGlobal("WebSocket", MockSocket);
     render(<App />);
     expect(await screen.findByLabelText("1 poll suggestions")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(api.dismissPollSuggestion).toHaveBeenCalledWith(18));
     vi.unstubAllGlobals();
+  });
+  it("renders the Insights analytics view", async () => {
+    vi.mocked(api.getCurrentAnalytics).mockResolvedValue({
+      session_id: 4, total_messages: 12, unique_chatters: 5, questions_detected: 3,
+      groups_open: 2, groups_answered: 1, groups_dismissed: 0,
+      average_time_to_answer_seconds: 18,
+      top_open_groups: [], top_unanswered_questions: [{ id: 8, canonical_text: "What GPU?", kind: "question", status: "open", asker_count: 3, message_count: 4, priority_score: 5, last_seen_at: new Date().toISOString() }],
+      poll_suggestions_approved: 0, poll_suggestions_dismissed: 0,
+      messages_per_minute: [{ minute: new Date().toISOString(), count: 2 }],
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Insights" }));
+    expect(await screen.findByText("Messages per minute")).toBeInTheDocument();
+    expect(screen.getByText("What GPU?")).toBeInTheDocument();
+    expect(screen.getByText("Top unanswered questions")).toBeInTheDocument();
   });
 });

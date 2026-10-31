@@ -214,6 +214,65 @@ class PollSuggestionResponse(BaseModel):
     supporting_messages: list[PollSupportingMessageResponse] = Field(default_factory=list)
 
 
+class AnalyticsGroup(BaseModel):
+    id: int
+    canonical_text: str
+    status: str
+    kind: str
+    asker_count: int
+    message_count: int
+    priority_score: float
+    last_seen_at: datetime
+
+
+class AnalyticsResponse(BaseModel):
+    session_id: int | None
+    total_messages: int = 0
+    unique_chatters: int = 0
+    questions_detected: int = 0
+    groups_open: int = 0
+    groups_answered: int = 0
+    groups_dismissed: int = 0
+    average_time_to_answer_seconds: float | None = None
+    top_open_groups: list[AnalyticsGroup] = Field(default_factory=list)
+    poll_suggestions_approved: int = 0
+    poll_suggestions_dismissed: int = 0
+    messages_per_minute: list[dict[str, object]] = Field(default_factory=list)
+    top_unanswered_questions: list[AnalyticsGroup] = Field(default_factory=list)
+
+
+class SessionSummaryRequest(BaseModel):
+    regenerate: bool = False
+
+
+class FrequentlyAskedQuestion(BaseModel):
+    question: str = Field(max_length=300)
+    status: str = Field(pattern="^(answered|unanswered)$")
+
+
+class SessionSummaryContent(BaseModel):
+    headline: str
+    top_topics: list[str] = Field(max_length=5)
+    frequently_asked_questions: list[FrequentlyAskedQuestion] = Field(max_length=5)
+    unanswered_follow_ups: list[str] = Field(max_length=5)
+    audience_mood_observation: str
+    content_suggestions: list[str] = Field(min_length=3, max_length=3)
+
+    @field_validator("audience_mood_observation")
+    @classmethod
+    def mood_is_observational_not_numeric(cls, value: str) -> str:
+        if any(character.isdigit() for character in value):
+            raise ValueError("Audience mood must be described without numeric scores")
+        return value
+
+
+class SessionSummaryResponse(BaseModel):
+    session_id: int
+    status: str
+    generated_at: datetime | None = None
+    content: SessionSummaryContent | None = None
+
+
 class InteractionGroupResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "id": 42, "kind": "question", "canonical_text": "Can my GPU run this game?",

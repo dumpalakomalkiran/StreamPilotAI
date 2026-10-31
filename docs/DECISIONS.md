@@ -30,4 +30,6 @@
 
 - **ADR-014 Audience polls:** infer disagreement inside the existing batched queue-grouping Gemini call; do not make a separate request per message or use Twitch native polls. Validate distinct-viewer evidence in backend code. Persist only a draft; streamer action converts it to an unapproved existing Challenge, followed by the existing approval/launch, `!vote N`, timer and result path. Add the table through metadata creation because Alembic is not configured.
 
+- **ADR-015 Community Intelligence:** aggregate only persisted moderation-filtered chat and queue/poll data. Cache structured summaries by broadcaster/session, call Gemini once for a missing recap and only regenerate on an explicit request. Session end is non-blocking and schedules recap generation; empty sessions use a deterministic zero-activity recap.
+
 - **ADR-014 Audience polls:** infer disagreement inside the existing batched queue-grouping Gemini call; do not make a separate request per message or use Twitch native polls. Validate distinct-viewer evidence in backend code. Persist only a draft; streamer action converts it to an unapproved existing Challenge, followed by the existing approval/launch, `!vote N`, timer and result path. Add the table through metadata creation because Alembic is not configured.

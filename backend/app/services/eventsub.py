@@ -24,6 +24,7 @@ from app.models import (
     StreamSession,
     TwitchCredential,
 )
+from app.services.analytics import generate_summary_background
 from app.services.dashboard_socket import broadcast as broadcast_dashboard
 from app.services.dashboard_socket import interaction_payload
 from app.services.interactions import (
@@ -97,6 +98,22 @@ def _set_stream_live(broadcaster_id: str, is_live: bool, event_id: str) -> bool:
         return changed
     finally:
         db.close()
+
+
+def _summarize_latest_session(broadcaster_id: str) -> None:
+    db = SessionLocal()
+    session_id = None
+    try:
+        session = db.scalar(select(StreamSession).where(
+            StreamSession.broadcaster_id == broadcaster_id,
+            StreamSession.ended_at.is_not(None),
+        ).order_by(StreamSession.ended_at.desc()))
+        if session is not None:
+            session_id = session.id
+    finally:
+        db.close()
+    if session_id is not None:
+        generate_summary_background(broadcaster_id, session_id)
 
 
 def _invalidate_broadcaster_session(broadcaster_id: str) -> None:
@@ -288,6 +305,8 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
             await broadcast_dashboard(broadcaster_id, {
                 "type": "session.started" if subscription_type == "stream.online" else "session.ended"
             })
+            if subscription_type == "stream.offline":
+                asyncio.create_task(asyncio.to_thread(_summarize_latest_session, broadcaster_id))
         return
     if subscription_type != "channel.chat.message":
         overlay_hash, queue_events = await asyncio.to_thread(_process_chat_removal, broadcaster_id, subscription_type, payload)

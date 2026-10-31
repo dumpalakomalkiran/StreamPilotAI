@@ -80,3 +80,16 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/a
 ```
 
 Current EventSub types and scopes must be checked against current official docs before modification. Safe provider errors must never include keys, tokens, raw diagnostics or private chat.
+
+## Community Intelligence
+Analytics endpoints use the authenticated broadcaster. Current-session message counts use the app's persisted, moderation-filtered chat window (maximum 500 recent rows/session); messages/minute always returns 30 minute buckets. Average answer time is measured from a question group's first observation to its `answered_at` timestamp. Questions detected counts retained queue candidate messages. `GET /api/analytics/current` returns live counts, the top five open groups, poll-suggestion approved/dismissed totals, and open unanswered questions.
+
+`POST /api/analytics/current/end` ends the active session and returns immediately with a pending recap status. Gemini recap work is scheduled in the background; `stream.offline` also schedules a recap. The Insights page polls the read-only summary route. `POST /api/analytics/sessions/{id}/summary` generates once and then serves the cache; send `{"regenerate":true}` only when an explicit new generation is wanted. The prompt contains aggregate stats, at most 12 top queue groups, and challenge/poll results; it never includes complete raw chat or member messages. Empty sessions get a local zero-activity recap without calling Gemini. Audience mood is plain cautious language, never a score.
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/analytics/current'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/analytics/current/end'
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/analytics/sessions/5/summary'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"regenerate":false}' 'http://localhost:8000/api/analytics/sessions/5/summary'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"regenerate":true}' 'http://localhost:8000/api/analytics/sessions/5/summary'
+```

@@ -71,6 +71,20 @@ export interface PollSuggestion {
   supporting_messages: Array<{ display_name: string; text: string; created_at: string }>;
 }
 
+export interface AnalyticsSnapshot {
+  session_id: number | null; total_messages: number; unique_chatters: number; questions_detected: number;
+  groups_open: number; groups_answered: number; groups_dismissed: number;
+  average_time_to_answer_seconds: number | null;
+  top_open_groups: Array<{id:number; canonical_text:string; kind:string; status:string; asker_count:number; message_count:number; priority_score:number; last_seen_at:string}>;
+  top_unanswered_questions: Array<{id:number; canonical_text:string; kind:string; status:string; asker_count:number; message_count:number; priority_score:number; last_seen_at:string}>;
+  poll_suggestions_approved:number; poll_suggestions_dismissed:number;
+  messages_per_minute:Array<{minute:string;count:number}>;
+}
+export interface SessionSummary {
+  session_id:number; status:string; generated_at:string|null;
+  content:null|{headline:string;top_topics:string[];frequently_asked_questions:Array<{question:string;status:string}>;unanswered_follow_ups:string[];audience_mood_observation:string;content_suggestions:string[]};
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 export const websocketUrl = apiBase
   ? apiBase.replace(/^http/, "ws")
@@ -96,6 +110,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   getStatus: () => request<AppStatus>("/api/status"),
+  getCurrentAnalytics: () => request<AnalyticsSnapshot>("/api/analytics/current"),
+  endCurrentSession: () => request<SessionSummary>("/api/analytics/current/end", { method: "POST" }),
+  getSessionSummary: (id:number) => request<SessionSummary>(`/api/analytics/sessions/${id}/summary`),
+  getLatestSessionSummary: () => request<SessionSummary>("/api/analytics/latest-summary"),
+  generateSessionSummary: (id:number, regenerate=false) => request<SessionSummary>(`/api/analytics/sessions/${id}/summary`, {method:"POST",body:JSON.stringify({regenerate})}),
   suggestChallenge: (chat_messages: string[]) =>
     request<ChallengeProposal>("/api/challenges/suggest", { method: "POST", body: JSON.stringify({ chat_messages }) }),
   createChallenge: (proposal: ChallengeProposal) =>
