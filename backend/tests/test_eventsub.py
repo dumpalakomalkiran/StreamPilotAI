@@ -123,12 +123,41 @@ async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch
         viewer_message = next(message for message in messages if message.display_name == "Viewer One")
         streamer_message = next(message for message in messages if message.display_name == "Streamer")
         assert viewer_message.text == "!vote 2"
+        assert viewer_message.is_synthetic is False
         assert streamer_message.text == "Testing chat feed"
         assert len(votes) == 1
         assert votes[0].option_id == db.scalar(
             select(ChallengeOption.id).where(ChallengeOption.position == 2)
         )
 
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_eventsub_replay_uses_same_ingest_path_and_marks_synthetic(monkeypatch) -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    test_sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with test_sessions() as db:
+        db.add(StreamSession(broadcaster_id="synthetic-replay", mode="replay"))
+        db.commit()
+    monkeypatch.setattr(eventsub, "SessionLocal", test_sessions)
+    await eventsub._process_notification(
+        "synthetic-replay",
+        {"subscription_type": "channel.chat.message", "message_id": "synthetic-replay-test-1"},
+        {"event": {
+            "broadcaster_user_id": "synthetic-replay", "chatter_user_id": "synthetic-viewer",
+            "chatter_user_name": "Replay Viewer",
+            "message": {"text": "How do I improve GPU settings?"},
+        }},
+        is_synthetic=True,
+    )
+    with test_sessions() as db:
+        message = db.get(ChatMessage, "synthetic-replay-test-1")
+        interaction = db.scalar(select(Interaction))
+        assert message is not None and message.is_synthetic is True
+        assert interaction is not None and interaction.chat_message_id == message.event_id
     Base.metadata.drop_all(engine)
     engine.dispose()
 

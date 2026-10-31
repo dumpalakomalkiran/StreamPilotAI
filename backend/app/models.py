@@ -96,6 +96,7 @@ class ChatMessage(Base):
     chatter_id: Mapped[str] = mapped_column(String(80))
     display_name: Mapped[str] = mapped_column(String(80), default="Viewer")
     text: Mapped[str] = mapped_column(String(500))
+    is_synthetic: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     moderation_ai_checked: Mapped[bool] = mapped_column(Boolean, default=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

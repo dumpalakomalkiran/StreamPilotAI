@@ -45,6 +45,7 @@ def upgrade_schema() -> None:
             "featured_interaction_group_id": "INTEGER",
         },
         "chat_messages": {
+            "is_synthetic": "BOOLEAN NOT NULL DEFAULT 0",
             "moderation_ai_checked": "BOOLEAN NOT NULL DEFAULT 0",
         },
         "twitch_credentials": {

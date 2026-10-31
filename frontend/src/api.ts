@@ -28,6 +28,7 @@ export interface ChatMessage {
   display_name: string;
   text: string;
   received_at: string;
+  is_synthetic?: boolean;
 }
 
 export type InteractionStatus = "open" | "answered" | "snoozed" | "dismissed";

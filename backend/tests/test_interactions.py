@@ -1,6 +1,7 @@
 import json
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -301,6 +302,51 @@ async def test_gemini_timeout_falls_back_and_keeps_queue_available(db, monkeypat
     assert await interactions.resolve_pending(session, broadcaster_id=stream.broadcaster_id,
                                               session_id=stream.id) == 1
     assert session.scalar(select(InteractionGroup)) is not None
+
+
+@pytest.mark.asyncio
+async def test_prompt_injection_stays_untrusted_schema_valid_and_triggers_no_action(db, monkeypatch) -> None:
+    session, stream = db
+    injection_set = Path(__file__).resolve().parents[2] / "data" / "prompt_injection_messages.jsonl"
+    samples = [json.loads(line) for line in injection_set.read_text(encoding="utf-8").splitlines()]
+    injected_text = samples[0]["text"]
+    message = add_message(session, stream, "prompt-injection-1", "viewer-inject", injected_text)
+    item = Interaction(broadcaster_id=stream.broadcaster_id, chat_message_id=message.event_id,
+                      user_login_hash="hashed-injector", text=message.text)
+    session.add(item)
+    session.commit()
+    monkeypatch.setattr(interactions, "get_settings", lambda: Settings(
+        _env_file=None, gemini_api_key="mock-key", ai_request_timeout_seconds=1,
+    ))
+    captured = {}
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            captured["response_text"] = json.dumps({"decisions": [{
+                "candidate_id": item.id, "group_id": None,
+                "canonical_text": "How do I unlock the map?", "kind": "question",
+            }]})
+            return SimpleNamespace(text=captured["response_text"])
+
+    monkeypatch.setattr(interactions.genai, "Client", lambda **_kwargs: SimpleNamespace(models=FakeModels()))
+    send_calls = []
+
+    async def forbidden_send(*_args, **_kwargs):
+        send_calls.append(True)
+
+    from app.services import twitch_chat
+    monkeypatch.setattr(twitch_chat, "send_chat_message", forbidden_send)
+    assert await interactions.resolve_pending(session, broadcaster_id=stream.broadcaster_id,
+                                              session_id=stream.id) == 1
+    output = interactions.GroupingOutput.model_validate_json(captured["response_text"])
+    assert output.decisions[0].candidate_id == item.id
+    assert "UNTRUSTED_JSON_START" in captured["contents"]
+    assert injected_text in captured["contents"]
+    assert "tools" not in captured["config"]
+    assert send_calls == []
+    assert session.scalar(select(Challenge)) is None
+    assert session.scalar(select(InteractionGroup)).canonical_text == "How do I unlock the map?"
 
 
 def test_priority_components_explain_rank_and_recent_repetition(db) -> None:

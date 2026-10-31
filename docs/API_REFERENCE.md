@@ -20,7 +20,7 @@ In live mode `/api` management routes use HttpOnly `stream_pilot_session` from T
 - Schema bounds: title 1–80; question 1–180; 2–4 options; label 1–60; description max 140; duration 15–60; reason 1–240.
 
 ## Chat and overlay
-- `GET /api/chat/messages?limit=50`: max 100 response; max 500 recent rows/session. Moderation events delete stored rows; bounded tombstones prevent replay restoration. A vote already accepted is not undone by later chat deletion.
+- `GET /api/chat/messages?limit=50`: max 100 response; max 500 recent rows/session. `is_synthetic` marks development replay rows; live Twitch messages are false. Moderation events delete stored rows; bounded tombstones prevent replay restoration. A vote already accepted is not undone by later chat deletion.
 - `POST /api/overlay/token`: issue/rotate private token and OBS URL; treat as bearer secret.
 - `WS /ws/overlay`: subprotocols `streampilot-overlay` and private token. Events: `connection.status`, `challenge.started`, `vote.updated`, `challenge.completed`; reconnect receives current state.
 

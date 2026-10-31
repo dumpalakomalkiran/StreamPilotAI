@@ -205,10 +205,12 @@ class ChatMessageResponse(BaseModel):
         "display_name": "ViewerOne",
         "text": "Take the left path!",
         "received_at": "2026-10-28T10:15:30Z",
+        "is_synthetic": False,
     }]})
     display_name: str
     text: str
     received_at: datetime
+    is_synthetic: bool = False
 
 
 class ModerationIncidentResponse(BaseModel):

@@ -479,7 +479,8 @@ def list_chat_messages(
         ChatMessage.session_id == session.id
     ).order_by(ChatMessage.received_at.desc()).limit(limit)).all()
     return [
-        {"display_name": message.display_name, "text": message.text, "received_at": message.received_at}
+        {"display_name": message.display_name, "text": message.text,
+         "received_at": message.received_at, "is_synthetic": message.is_synthetic}
         for message in reversed(messages)
     ]
 

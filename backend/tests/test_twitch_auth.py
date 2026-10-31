@@ -164,3 +164,55 @@ async def test_concurrent_refreshes_share_one_rotated_token(monkeypatch) -> None
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_forced_refresh_rotates_a_still_valid_token_for_health_check(monkeypatch) -> None:
+    settings = Settings(
+        _env_file=None,
+        app_secret_key="forced-refresh-test-secret-not-used-outside-tests-1234",
+        twitch_client_id="client-id",
+        twitch_client_secret="client-secret",
+    )
+    monkeypatch.setattr(twitch_auth, "get_settings", lambda: settings)
+    calls = []
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "rotated-access", "refresh_token": "rotated-refresh", "expires_in": 3600}
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **kwargs):
+            calls.append(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(twitch_auth.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as db:
+            credential = TwitchCredential(
+                broadcaster_id="force-refresh-user",
+                access_token=twitch_auth.encrypt_token("old-access"),
+                refresh_token=twitch_auth.encrypt_token("old-refresh"),
+                scopes="user:read:chat user:write:chat",
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+            db.add(credential)
+            db.commit()
+            token = await twitch_auth.refresh_access_token_if_needed(credential, db, force=True)
+            assert token == "rotated-access"
+            assert len(calls) == 1
+            assert twitch_auth.decrypt_token(credential.refresh_token) == "rotated-refresh"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()

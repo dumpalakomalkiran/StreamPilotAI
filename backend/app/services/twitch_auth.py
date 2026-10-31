@@ -121,7 +121,9 @@ async def exchange_callback(code: str, state: str, cookie_state: str | None, db:
     return {"broadcaster_id": broadcaster_id, "login": str(user.get("login", ""))}
 
 
-async def refresh_access_token_if_needed(credential: TwitchCredential, db: Session) -> str:
+async def refresh_access_token_if_needed(
+    credential: TwitchCredential, db: Session, *, force: bool = False
+) -> str:
     settings = get_settings()
     loop = asyncio.get_running_loop()
     lock = _refresh_locks.setdefault(loop, {}).setdefault(credential.broadcaster_id, asyncio.Lock())
@@ -131,7 +133,7 @@ async def refresh_access_token_if_needed(credential: TwitchCredential, db: Sessi
         expires_at = credential.expires_at
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
-        if expires_at > datetime.now(UTC) + timedelta(seconds=90):
+        if not force and expires_at > datetime.now(UTC) + timedelta(seconds=90):
             return decrypt_token(credential.access_token)
         refresh_token = decrypt_token(credential.refresh_token)
         async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:

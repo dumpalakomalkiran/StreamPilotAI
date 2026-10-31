@@ -220,7 +220,7 @@ def _process_chat_removal(
 
 
 def _process_chat_message(
-    broadcaster_id: str, metadata: dict, event: dict, message: str
+    broadcaster_id: str, metadata: dict, event: dict, message: str, *, is_synthetic: bool = False
 ) -> tuple[str | None, dict[str, object] | None, dict[str, object] | None]:
     chatter_id = str(event.get("chatter_user_id", ""))
     if not chatter_id:
@@ -244,6 +244,7 @@ def _process_chat_message(
                 chatter_id=chatter_id[:80],
                 display_name=str(event.get("chatter_user_name", "Viewer"))[:80],
                 text=message[:500].replace("\x00", ""),
+                is_synthetic=is_synthetic,
             ).on_conflict_do_nothing(index_elements=[ChatMessage.event_id]))
             if inserted.rowcount:
                 chat_row = db.get(ChatMessage, event_id[:128])
@@ -300,7 +301,9 @@ def _process_chat_message(
         db.close()
 
 
-async def _process_notification(broadcaster_id: str, metadata: dict, payload: dict) -> None:
+async def _process_notification(
+    broadcaster_id: str, metadata: dict, payload: dict, *, is_synthetic: bool = False
+) -> None:
     if not isinstance(metadata, dict) or not isinstance(payload, dict):
         logger.warning("Malformed Twitch EventSub notification skipped")
         return
@@ -345,7 +348,7 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
     if event.get("broadcaster_user_id") != broadcaster_id:
         return
     overlay_hash, result, moderation_event = await asyncio.to_thread(
-        _process_chat_message, broadcaster_id, metadata, event, message
+        _process_chat_message, broadcaster_id, metadata, event, message, is_synthetic=is_synthetic
     )
     if moderation_event:
         await broadcast_dashboard(broadcaster_id, moderation_event)
