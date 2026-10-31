@@ -48,6 +48,17 @@ export interface InteractionGroup {
   answered_at: string | null;
 }
 
+export interface AIResponseSuggestion {
+  id: number;
+  group_id: number;
+  text: string;
+  model: string;
+  created_at: string;
+  status: "draft" | "edited" | "sent" | "discarded";
+  sent_at: string | null;
+  twitch_message_id: string | null;
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 export const websocketUrl = apiBase
   ? apiBase.replace(/^http/, "ws")
@@ -97,4 +108,10 @@ export const api = {
   dismissInteraction: (id: number) => request<InteractionGroup>(`/api/interactions/${id}/dismiss`, { method: "POST" }),
   snoozeInteraction: (id: number, minutes: number) => request<InteractionGroup>(`/api/interactions/${id}/snooze`, { method: "POST", body: JSON.stringify({ minutes }) }),
   featureInteraction: (id: number) => request<{ status: string; interaction_id: number }>(`/api/interactions/${id}/feature`, { method: "POST" }),
+  suggestInteractionReply: (id: number) => request<AIResponseSuggestion>(`/api/interactions/${id}/response/suggest`, { method: "POST" }),
+  editResponse: (id: number, text: string) => request<AIResponseSuggestion>(`/api/responses/${id}`, { method: "PATCH", body: JSON.stringify({ text }) }),
+  sendResponse: (id: number) => request<AIResponseSuggestion>(`/api/responses/${id}/send`, { method: "POST" }),
+  discardResponse: (id: number) => request<AIResponseSuggestion>(`/api/responses/${id}/discard`, { method: "POST" }),
+  getStreamFacts: () => request<{ stream_facts: string }>("/api/settings/stream-facts"),
+  saveStreamFacts: (stream_facts: string) => request<{ stream_facts: string }>("/api/settings/stream-facts", { method: "PUT", body: JSON.stringify({ stream_facts }) }),
 };

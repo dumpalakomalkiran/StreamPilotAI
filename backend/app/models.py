@@ -139,6 +139,38 @@ class Interaction(Base):
     group: Mapped[InteractionGroup | None] = relationship(back_populates="members")
 
 
+class BroadcasterSettings(Base):
+    __tablename__ = "broadcaster_settings"
+    broadcaster_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    stream_facts: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class AIResponseSuggestion(Base):
+    __tablename__ = "ai_response_suggestions"
+    __table_args__ = (Index("ix_ai_response_scope", "broadcaster_id", "group_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("interaction_groups.id", ondelete="CASCADE"), index=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    text: Mapped[str] = mapped_column(String(500))
+    model: Mapped[str] = mapped_column(String(120))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    twitch_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class AIResponseAudit(Base):
+    __tablename__ = "ai_response_audit"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    response_id: Mapped[int] = mapped_column(ForeignKey("ai_response_suggestions.id"), index=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    actor_broadcaster_id: Mapped[str] = mapped_column(String(80))
+    sent_text: Mapped[str] = mapped_column(String(500))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    twitch_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class DeletedChatMessage(Base):
     """Short-lived message ID tombstone to prevent a replay restoring deleted chat."""
     __tablename__ = "deleted_chat_messages"

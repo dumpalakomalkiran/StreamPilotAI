@@ -38,6 +38,12 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T32 | Dashboard WebSocket | Cookie authentication and broadcaster-only event delivery; reconnect uses REST snapshot |
 | T33 | Smart Queue UI | Mocked REST/WebSocket render, filter, connection indicator, answer/snooze/dismiss/feature actions and keyboard shortcuts |
 | T34 | Featured overlay question | Only canonical question/count display; reconnect restores open feature; answer/dismiss/moderation hides it |
+| T35 | Reply suggestion | Explicitly requested Gemini call uses structured output, canonical text, <=5 sample messages and streamer facts; invalid output/provider timeout uses safe holding draft |
+| T36 | Reply grounding | Missing stream facts do not call Gemini and produce holding text; unsupported model answer cannot be used as a factual response |
+| T37 | Reply editing/discard | Broadcaster can edit 1–500 characters or discard; neither action sends a Twitch message |
+| T38 | Explicit reply send | Only POST `/api/responses/{id}/send` calls Helix; success audits actor/time/text/message ID and answers the queue group; failures preserve draft/open state |
+| T39 | Reply send bounds/isolation | Over-500 text rejected; other broadcaster cannot read, edit, or send a suggestion |
+| T40 | Reply UI | Suggest, edit, copy, explicit send and discard display; errors inline; no send occurs before the button action |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.

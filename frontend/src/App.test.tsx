@@ -29,10 +29,36 @@ vi.mock("./api", () => ({
     dismissInteraction: vi.fn(() => Promise.resolve({})),
     snoozeInteraction: vi.fn(() => Promise.resolve({})),
     featureInteraction: vi.fn(() => Promise.resolve({ status: "featured", interaction_id: 41 })),
+    suggestInteractionReply: vi.fn(() => Promise.resolve({ id: 91, group_id: 41, text: "I use an RTX 4070!", model: "mock-model", created_at: new Date().toISOString(), status: "draft", sent_at: null, twitch_message_id: null })),
+    editResponse: vi.fn((_id: number, text: string) => Promise.resolve({ id: 91, group_id: 41, text, model: "mock-model", created_at: new Date().toISOString(), status: "edited", sent_at: null, twitch_message_id: null })),
+    sendResponse: vi.fn(() => Promise.resolve({ id: 91, group_id: 41, text: "I use an RTX 4070!", model: "mock-model", created_at: new Date().toISOString(), status: "sent", sent_at: new Date().toISOString(), twitch_message_id: "msg-1" })),
+    discardResponse: vi.fn(() => Promise.resolve({})),
+    getStreamFacts: vi.fn(() => Promise.resolve({ stream_facts: "" })),
+    saveStreamFacts: vi.fn((stream_facts: string) => Promise.resolve({ stream_facts })),
   },
 }));
 
 describe("StreamPilot starter dashboard", () => {
+  it("keeps AI replies as drafts until the streamer explicitly sends them", async () => {
+    const sockets: MockSocket[] = [];
+    class MockSocket {
+      onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null; onclose: (() => void) | null = null;
+      constructor() { sockets.push(this); } close() { this.onclose?.(); }
+    }
+    vi.stubGlobal("WebSocket", MockSocket);
+    render(<App />);
+    expect(await screen.findByText("Which GPU are you using?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /suggest reply/i }));
+    expect(await screen.findByDisplayValue("I use an RTX 4070!")).toBeInTheDocument();
+    expect(api.sendResponse).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText(/AI reply draft/i), { target: { value: "Edited reply" } });
+    fireEvent.click(screen.getByRole("button", { name: /send to chat/i }));
+    await waitFor(() => expect(api.sendResponse).toHaveBeenCalledWith(91));
+    expect(api.editResponse).toHaveBeenCalledWith(91, "Edited reply");
+    expect(await screen.findByText(/Answered · reply sent to chat/i)).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
   it("renders the live queue and executes card actions", async () => {
     const sockets: MockSocket[] = [];
     class MockSocket {

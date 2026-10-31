@@ -166,6 +166,30 @@ class SnoozeInteractionRequest(BaseModel):
     minutes: int = Field(ge=1, le=1440)
 
 
+class StreamFactsRequest(BaseModel):
+    stream_facts: str = Field(default="", max_length=3000, description="Optional facts the streamer has explicitly provided; no secrets.")
+
+
+class StreamFactsResponse(BaseModel):
+    stream_facts: str
+
+
+class ResponseSuggestionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    group_id: int
+    text: str
+    model: str
+    created_at: datetime
+    status: str
+    sent_at: datetime | None
+    twitch_message_id: str | None
+
+
+class EditResponseSuggestionRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
 class OverlayTokenResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "token": "example-token-not-real",

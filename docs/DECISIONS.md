@@ -22,3 +22,8 @@
 ## 2026-11-01 — Real-time queue and featured overlay
 - Keep the overlay socket's token auth and challenge messages; add a separate session-cookie-authenticated `/ws/dashboard` broadcaster channel. Clients refetch REST state after reconnect rather than relying on event replay.
 - Persist the optional featured group ID on `StreamSession`. Only canonical queue text, kind and viewer count reach the overlay. Answer, dismiss and moderation clear the feature, and moderation replaces affected canonical text from retained messages.
+
+## 2026-11-01 — Grounded AI reply drafts
+- AI replies are drafts only. The authenticated streamer explicitly asks for a draft, reviews/edits it, and only a separate send endpoint posts it through the existing Helix chat-send adapter.
+- Keep up to 3000 characters of optional streamer-authored facts in broadcaster-scoped settings. Missing/unsupported facts yield a safe holding draft. Chat samples are capped at five, JSON encoded, treated as untrusted, and passed to Gemini with structured Pydantic output and no tools.
+- Store suggestions and a separate successful-send audit record (actor, time, exact message and Twitch ID); record model/usage/latency/failure in redacted logs, without storing request text in logs. Add tables through metadata creation as this repo has no Alembic history.

@@ -46,4 +46,21 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/a
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"minutes":15}' 'http://localhost:8000/api/interactions/42/snooze'
 ```
 
+## AI reply drafts (streamer-controlled)
+All endpoints are authenticated and broadcaster-scoped. `GET/PUT /api/settings/stream-facts` reads/writes up to 3000 characters of streamer-provided facts. Do not put credentials or private data there. Gemini is called only by `POST /api/interactions/{id}/response/suggest`, which considers the canonical question and up to five retained member messages. Chat is encoded as untrusted JSON, bounded, and never treated as instructions. If there are no stream facts, or Gemini cannot produce a valid structured answer grounded in the facts, the API saves a safe holding reply. Draft output is capped at 300 characters. A suggestion does not send chat.
+
+- `POST /api/interactions/{id}/response/suggest`: create a reviewable draft.
+- `PATCH /api/responses/{id}` with `{"text":"..."}`: edit an unsent draft, up to Twitch's 500-character limit.
+- `POST /api/responses/{id}/discard`: discard without sending.
+- `POST /api/responses/{id}/send`: the only suggestion endpoint that calls the existing Helix Send Chat Message adapter. It sends only the current reviewed text after an explicit streamer action. Success marks the draft sent, marks the interaction answered, and records broadcaster/actor, timestamp, exact sent text and Twitch message ID in the audit table. Rate limits and provider errors are returned as safe user-facing messages. No automatic send path exists.
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/settings/stream-facts'
+curl -X PUT -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"stream_facts":"I stream Tue/Thu at 7 PM. GPU: RTX 4070."}' 'http://localhost:8000/api/settings/stream-facts'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/interactions/42/response/suggest'
+curl -X PATCH -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"text":"I use an RTX 4070!"}' 'http://localhost:8000/api/responses/1'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/responses/1/send'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/responses/1/discard'
+```
+
 Current EventSub types and scopes must be checked against current official docs before modification. Safe provider errors must never include keys, tokens, raw diagnostics or private chat.

@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -28,6 +29,9 @@ from starlette.concurrency import run_in_threadpool
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, get_db, upgrade_schema
 from app.models import (
+    AIResponseAudit,
+    AIResponseSuggestion,
+    BroadcasterSettings,
     Challenge,
     ChatMessage,
     Interaction,
@@ -39,12 +43,16 @@ from app.schemas import (
     ChallengeProposal,
     ChallengeResponse,
     ChatMessageResponse,
+    EditResponseSuggestionRequest,
     HealthResponse,
     InteractionDetailResponse,
     InteractionGroupResponse,
     OverlayTokenResponse,
+    ResponseSuggestionResponse,
     SnoozeInteractionRequest,
     StatusResponse,
+    StreamFactsRequest,
+    StreamFactsResponse,
 )
 from app.services.challenge_clock import run_challenge_clock
 from app.services.challenges import generate_challenge
@@ -61,8 +69,9 @@ from app.services.overlay import revoke as overlay_revoke
 from app.services.question_overlay import broadcast as question_overlay_broadcast
 from app.services.question_overlay import connect as question_overlay_connect
 from app.services.question_overlay import disconnect as question_overlay_disconnect
+from app.services.response_suggestions import generate_reply
 from app.services.twitch_auth import create_authorization_url, exchange_callback
-from app.services.twitch_chat import send_chat_message
+from app.services.twitch_chat import send_chat_message, send_chat_message_checked
 from app.services.voting import (
     cast_vote,
     challenge_payload,
@@ -73,6 +82,7 @@ from app.services.voting import (
 )
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 Base.metadata.create_all(bind=engine)
 upgrade_schema()
 app = FastAPI(
@@ -98,7 +108,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Authorization", "Content-Type", "X-CSRF-Token"],
 )
 
@@ -400,6 +410,36 @@ def _scoped_interaction_group(db: Session, group_id: int, broadcaster_id: str) -
     return group
 
 
+def _scoped_response(db: Session, response_id: int, broadcaster_id: str) -> AIResponseSuggestion:
+    suggestion = db.scalar(select(AIResponseSuggestion).where(
+        AIResponseSuggestion.id == response_id,
+        AIResponseSuggestion.broadcaster_id == broadcaster_id,
+    ))
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Response suggestion not found")
+    return suggestion
+
+
+@app.get("/api/settings/stream-facts", response_model=StreamFactsResponse, tags=["Settings"],
+         summary="Read streamer-provided reply facts", description="Returns the authenticated broadcaster's optional facts used to ground reply drafts. Never contains credentials.")
+def get_stream_facts(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    row = db.get(BroadcasterSettings, broadcaster_id)
+    return {"stream_facts": row.stream_facts if row else ""}
+
+
+@app.put("/api/settings/stream-facts", response_model=StreamFactsResponse, tags=["Settings"],
+         summary="Save streamer-provided reply facts", description="Stores up to 3000 characters of optional streamer-provided facts for grounded reply suggestions. Do not enter secrets.")
+def put_stream_facts(payload: StreamFactsRequest, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    row = db.get(BroadcasterSettings, broadcaster_id)
+    if row is None:
+        row = BroadcasterSettings(broadcaster_id=broadcaster_id, stream_facts=payload.stream_facts.strip())
+        db.add(row)
+    else:
+        row.stream_facts = payload.stream_facts.strip()
+    db.commit()
+    return {"stream_facts": row.stream_facts}
+
+
 @app.get(
     "/api/interactions", response_model=list[InteractionGroupResponse], tags=["Interactions"],
     summary="List prioritized chat interactions",
@@ -572,6 +612,102 @@ def feature_interaction(interaction_id: int = Path(ge=1), background: Background
                 },
             })
     return {"status": "featured", "interaction_id": group.id}
+
+
+@app.post("/api/interactions/{interaction_id}/response/suggest", response_model=ResponseSuggestionResponse,
+          tags=["Interactions"], summary="Generate a grounded reply draft",
+          description="Calls Gemini only when explicitly requested. The draft is persisted for review and is never sent automatically. Viewer text is bounded JSON-encoded untrusted data; only streamer-provided facts can support factual claims.",
+          responses={404: {"description": "Interaction not found for this broadcaster."}})
+async def suggest_interaction_response(interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+                                      broadcaster_id: str = Depends(require_streamer)):
+    group = _scoped_interaction_group(db, interaction_id, broadcaster_id)
+    if group.status != "open":
+        raise HTTPException(status_code=409, detail="Replies can only be drafted for open interactions")
+    members = db.scalars(select(Interaction).where(
+        Interaction.group_id == group.id,
+        Interaction.broadcaster_id == broadcaster_id,
+    ).order_by(Interaction.created_at.desc()).limit(5)).all()
+    samples = [member.text[:300] for member in reversed(members)]
+    facts_row = db.get(BroadcasterSettings, broadcaster_id)
+    text, model = await generate_reply(group.canonical_text, samples, facts_row.stream_facts if facts_row else "")
+    suggestion = AIResponseSuggestion(group_id=group.id, broadcaster_id=broadcaster_id,
+                                      text=text[:300], model=model, status="draft")
+    db.add(suggestion)
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion
+
+
+@app.patch("/api/responses/{response_id}", response_model=ResponseSuggestionResponse, tags=["Responses"],
+           summary="Edit a reply draft", description="Edits an unsent reply draft for the authenticated broadcaster. Maximum 500 characters.",
+           responses={404: {"description": "Response suggestion not found."}, 409: {"description": "Response was already sent or discarded."}})
+def edit_response_suggestion(payload: EditResponseSuggestionRequest, response_id: int = Path(ge=1),
+                             db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    suggestion = _scoped_response(db, response_id, broadcaster_id)
+    if suggestion.status not in {"draft", "edited"}:
+        raise HTTPException(status_code=409, detail="Only an unsent draft can be edited")
+    suggestion.text = payload.text.strip()
+    if not suggestion.text:
+        raise HTTPException(status_code=422, detail="Reply text cannot be blank")
+    suggestion.status = "edited"
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion
+
+
+@app.post("/api/responses/{response_id}/discard", response_model=ResponseSuggestionResponse, tags=["Responses"],
+          summary="Discard an unsent reply draft", description="Marks the review draft as discarded without sending it.")
+def discard_response_suggestion(response_id: int = Path(ge=1), db: Session = Depends(get_db),
+                                broadcaster_id: str = Depends(require_streamer)):
+    suggestion = _scoped_response(db, response_id, broadcaster_id)
+    if suggestion.status not in {"draft", "edited"}:
+        raise HTTPException(status_code=409, detail="Only an unsent draft can be discarded")
+    suggestion.status = "discarded"
+    db.commit()
+    db.refresh(suggestion)
+    return suggestion
+
+
+@app.post("/api/responses/{response_id}/send", response_model=ResponseSuggestionResponse, tags=["Responses"],
+          summary="Explicitly send a reply to Twitch chat", description="This is the only reply-suggestion operation that calls Twitch Send Chat Message. Sends the streamer-reviewed text (max 500 chars); on success records who/when/what and marks its interaction answered.",
+          responses={401: {"description": "Reconnect Twitch."}, 404: {"description": "Response suggestion not found."}, 409: {"description": "Draft is not sendable or queue item is closed."}, 429: {"description": "Twitch chat rate limit."}, 502: {"description": "Twitch rejected or could not send the message."}})
+async def send_response_suggestion(response_id: int = Path(ge=1), background: BackgroundTasks = None,
+                                   db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    suggestion = _scoped_response(db, response_id, broadcaster_id)
+    if suggestion.status not in {"draft", "edited"}:
+        raise HTTPException(status_code=409, detail="Only an unsent draft can be sent")
+    if not suggestion.text.strip() or len(suggestion.text) > 500:
+        raise HTTPException(status_code=422, detail="Twitch chat messages must contain 1–500 characters")
+    group = _scoped_interaction_group(db, suggestion.group_id, broadcaster_id)
+    if group.status != "open":
+        raise HTTPException(status_code=409, detail="This interaction is no longer open")
+    credential = db.get(TwitchCredential, broadcaster_id)
+    if credential is None:
+        raise HTTPException(status_code=401, detail="Connect Twitch before sending a reply")
+    result = await send_chat_message_checked(credential, suggestion.text, db)
+    sent_at = datetime.now(UTC)
+    suggestion.status = "sent"
+    suggestion.sent_at = sent_at
+    suggestion.twitch_message_id = result.get("message_id")
+    group.status = "answered"
+    group.answered_at = sent_at
+    group.closed_asker_count = group.asker_count
+    db.add(AIResponseAudit(response_id=suggestion.id, broadcaster_id=broadcaster_id,
+                           actor_broadcaster_id=broadcaster_id, sent_text=suggestion.text,
+                           sent_at=sent_at, twitch_message_id=suggestion.twitch_message_id))
+    session = db.get(StreamSession, group.session_id)
+    was_featured = bool(session and session.featured_interaction_group_id == group.id)
+    if was_featured:
+        session.featured_interaction_group_id = None
+    db.commit()
+    db.refresh(suggestion)
+    payload = _interaction_payload(db, group, include_messages=True)
+    if background is not None:
+        background.add_task(dashboard_broadcast, broadcaster_id,
+                            {"type": "interaction.updated", "interaction": _queue_event_payload(payload)})
+        if was_featured and session and session.overlay_token_hash:
+            background.add_task(question_overlay_broadcast, session.overlay_token_hash, {"type": "question.hidden"})
+    return suggestion
 
 
 @app.post(

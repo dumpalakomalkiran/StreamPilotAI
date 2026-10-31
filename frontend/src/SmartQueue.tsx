@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Check, Clock3, MonitorUp, Radio, X } from "lucide-react";
-import { api, websocketUrl, type InteractionGroup } from "./api";
+import { Check, Clock3, Copy, MonitorUp, Radio, Send, Sparkles, X } from "lucide-react";
+import { api, websocketUrl, type AIResponseSuggestion, type InteractionGroup } from "./api";
 
 type Props = { onError?: (message: string) => void };
 
@@ -13,6 +13,7 @@ export default function SmartQueue({ onError }: Props) {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
+  const [replies, setReplies] = useState<Record<number, { suggestion: AIResponseSuggestion; text: string; error: string; sent: boolean }>>({});
   const socketRef = useRef<WebSocket | null>(null);
   const refresh = useCallback(async () => {
     try { setItems(await api.listInteractions({ status, kind, q: search.trim() })); }
@@ -62,6 +63,34 @@ export default function SmartQueue({ onError }: Props) {
     finally { setBusy(null); }
   }
 
+  async function suggestReply(id: number) {
+    setBusy(id);
+    setReplies((current) => ({ ...current, [id]: { ...(current[id] ?? { suggestion: null as unknown as AIResponseSuggestion, text: "", error: "", sent: false }), error: "" } }));
+    try {
+      const suggestion = await api.suggestInteractionReply(id);
+      setReplies((current) => ({ ...current, [id]: { suggestion, text: suggestion.text, error: "", sent: false } }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Reply suggestion failed.";
+      setReplies((current) => ({ ...current, [id]: { ...(current[id] ?? { suggestion: null as unknown as AIResponseSuggestion, text: "", sent: false }), error: message } }));
+    } finally { setBusy(null); }
+  }
+
+  async function sendReply(item: InteractionGroup) {
+    const draft = replies[item.id];
+    if (!draft?.suggestion) return;
+    setBusy(item.id);
+    setReplies((current) => ({ ...current, [item.id]: { ...draft, error: "" } }));
+    try {
+      await api.editResponse(draft.suggestion.id, draft.text);
+      const sent = await api.sendResponse(draft.suggestion.id);
+      setReplies((current) => ({ ...current, [item.id]: { suggestion: sent, text: sent.text, error: "", sent: true } }));
+      setItems((current) => current.map((row) => row.id === item.id ? { ...row, status: "answered", answered_at: sent.sent_at } : row));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Reply could not be sent.";
+      setReplies((current) => ({ ...current, [item.id]: { ...draft, error: message } }));
+    } finally { setBusy(null); }
+  }
+
   function cardKeys(event: KeyboardEvent<HTMLElement>, item: InteractionGroup) {
     if (event.target !== event.currentTarget || item.status !== "open") return;
     const key = event.key.toLowerCase();
@@ -82,11 +111,21 @@ export default function SmartQueue({ onError }: Props) {
         <div className="queue-card-top"><span className={`kind-badge kind-${item.kind}`}>{item.kind}</span><span className="priority-badge" title={`Priority ${item.priority_score.toFixed(1)} = askers ${item.priority_components.askers.toFixed(1)} + recency ${item.priority_components.recency.toFixed(1)} + repetition ${item.priority_components.repetition.toFixed(1)}`} aria-label={`Priority ${item.priority_score.toFixed(1)}. Askers ${item.priority_components.askers.toFixed(1)}, recency ${item.priority_components.recency.toFixed(1)}, repetition ${item.priority_components.repetition.toFixed(1)}`}>Priority {item.priority_score.toFixed(1)} <span>ⓘ</span></span></div>
         <h3>{item.canonical_text}</h3><div className="queue-card-meta"><span>{item.asker_count} {item.asker_count === 1 ? "viewer" : "viewers"} · {item.message_count} messages</span><span><Clock3 size={13}/> {timeSince(item.last_seen_at, now)}</span></div>
         {item.status === "open" && <div className="queue-actions">
+          <button className="queue-reply" disabled={busy === item.id} onClick={() => void suggestReply(item.id)}><Sparkles size={14}/>{replies[item.id]?.suggestion ? "Regenerate reply" : "Suggest reply"}</button>
           <button className="queue-answer" disabled={busy === item.id} onClick={() => void action(item.id, () => api.answerInteraction(item.id))}><Check size={14}/> Answer <kbd>A</kbd></button>
           <div className="snooze-wrap"><button disabled={busy === item.id} aria-label={`Snooze question ${item.id}`}><Clock3 size={14}/> Snooze</button><div className="snooze-menu" aria-label="Snooze duration">{[5, 15, 30].map((minutes) => <button key={minutes} onClick={() => void action(item.id, () => api.snoozeInteraction(item.id, minutes))}>{minutes} min</button>)}</div><kbd>S</kbd></div>
           <button disabled={busy === item.id} onClick={() => void action(item.id, () => api.dismissInteraction(item.id))}><X size={14}/> Dismiss <kbd>D</kbd></button>
           <button className="queue-feature" disabled={busy === item.id} onClick={() => void action(item.id, () => api.featureInteraction(item.id))}><MonitorUp size={14}/> Show on stream</button>
         </div>}
+        {replies[item.id]?.suggestion && !replies[item.id]?.sent && <div className="reply-draft">
+          <label htmlFor={`reply-${item.id}`}>AI reply draft · review before sending</label>
+          <textarea id={`reply-${item.id}`} maxLength={500} value={replies[item.id].text} onChange={(event) => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], text: event.target.value } }))}/>
+          <div className="reply-meta"><span>{replies[item.id].text.length}/500 characters · {replies[item.id].suggestion.model}</span><span>AI never sends automatically</span></div>
+          {replies[item.id].error && <p role="alert" className="reply-error">{replies[item.id].error}</p>}
+          <div className="reply-actions"><button onClick={() => void navigator.clipboard.writeText(replies[item.id].text).catch(() => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], error: "Clipboard access is unavailable in this browser." } })))}><Copy size={13}/> Copy</button><button className="send-reply" disabled={busy === item.id || !replies[item.id].text.trim()} onClick={() => void sendReply(item)}><Send size={13}/> Send to chat</button><button onClick={() => { void api.discardResponse(replies[item.id].suggestion.id).then(() => setReplies((current) => { const next = { ...current }; delete next[item.id]; return next; })).catch((error: unknown) => setReplies((current) => ({ ...current, [item.id]: { ...current[item.id], error: error instanceof Error ? error.message : "Draft could not be discarded." } })); }}>Discard</button></div>
+        </div>}
+        {replies[item.id]?.sent && <p className="reply-sent" role="status"><Check size={14}/> Answered · reply sent to chat</p>}
+        {replies[item.id]?.error && !replies[item.id]?.suggestion && <p className="reply-error" role="alert">{replies[item.id].error}</p>}
       </article>) : <div className="queue-empty"><span>✦</span><strong>Nothing in the queue yet</strong><p>Questions and requests from live chat will appear here, grouped by intent.</p></div>}
     </div>
     <p className="queue-shortcuts">Focus a card and press <kbd>A</kbd> answer, <kbd>S</kbd> snooze 15m, or <kbd>D</kbd> dismiss.</p>

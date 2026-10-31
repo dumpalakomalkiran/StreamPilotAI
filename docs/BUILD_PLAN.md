@@ -25,3 +25,6 @@ React dashboard/overlay; FastAPI/Pydantic; SQLAlchemy/SQLite; challenge lifecycl
 
 ## Smart Interaction Queue — implementation added
 The queue adds EventSub question/request intake, same-session fuzzy grouping, optional bounded batched Gemini grouping with deterministic fallback, explainable priority, broadcaster-scoped lifecycle APIs, a broadcaster-scoped dashboard WebSocket and a Smart Queue UI alongside raw chat and the existing challenge editor. The existing overlay protocol retains its auth/challenge behavior and supports an optional featured queue question. Local tests are mocked and do not verify real Gemini/EventSub delivery.
+
+## AI reply drafts — implementation added
+The queue supports streamer-requested Gemini reply drafts grounded by optional broadcaster stream facts. Drafts can be edited, copied or discarded. Twitch chat is sent only by an explicit `Send to chat` action, through the shared Helix adapter; successful sends are audited and mark the queue item answered. Mocked backend coverage passes; frontend and live-provider verification remain pending as noted in `PROGRESS.md`.
