@@ -51,6 +51,12 @@ def upgrade_schema() -> None:
             "auth_session_hash": "VARCHAR(64)",
             "auth_session_expires_at": "DATETIME",
         },
+        "broadcaster_settings": {
+            "native_twitch_polls_enabled": "BOOLEAN NOT NULL DEFAULT 0",
+        },
+        "poll_suggestions": {
+            "approved_challenge_id": "INTEGER REFERENCES challenges(id)",
+        },
     }
     with engine.begin() as connection:
         tables = set(inspect(connection).get_table_names())

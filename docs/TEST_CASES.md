@@ -60,3 +60,4 @@ Mock providers in automated tests; never consume quota or send real chat.
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.
+| T54 | Optional native Twitch polls | Poll scope is absent by default and requested only after settings opt-in/re-authorization; mocked Helix creation success, Affiliate/Partner 403 with `!vote N` fallback, 429, active Twitch/StreamPilot conflict and missing-scope response; tenant-scoped tracking/end |

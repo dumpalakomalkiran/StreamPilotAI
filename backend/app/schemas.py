@@ -85,6 +85,34 @@ class PollSuggestionApproval(BaseModel):
         return options
 
 
+class NativePollSettingsRequest(BaseModel):
+    enabled: bool
+
+
+class NativePollSettingsResponse(BaseModel):
+    enabled: bool
+    reauthorization_required: bool = False
+    message: str
+
+
+class NativeTwitchPollCreateRequest(BaseModel):
+    suggestion_id: int = Field(ge=1, examples=[17])
+    duration_seconds: int | None = Field(default=None, ge=15, le=1800, examples=[300])
+
+
+class NativeTwitchPollResponse(BaseModel):
+    id: int
+    suggestion_id: int
+    challenge_id: int
+    twitch_poll_id: str
+    title: str
+    options: list[str]
+    duration_seconds: int
+    status: str
+    started_at: datetime
+    ended_at: datetime | None
+
+
 class GeminiChallengeOption(BaseModel):
     """Gemini-compatible option schema; app validation remains stricter downstream."""
 

@@ -29,6 +29,11 @@ vi.mock("./api", () => ({
     listPollSuggestions: vi.fn(() => Promise.resolve([])),
     approvePollSuggestion: vi.fn(),
     dismissPollSuggestion: vi.fn(() => Promise.resolve({})),
+    getNativePollSettings: vi.fn(() => Promise.resolve({ enabled: false, reauthorization_required: false, message: "Native Twitch polls are off." })),
+    saveNativePollSettings: vi.fn((enabled: boolean) => Promise.resolve({ enabled, reauthorization_required: enabled, message: "Reconnect Twitch." })),
+    listNativeTwitchPolls: vi.fn(() => Promise.resolve([])),
+    createNativeTwitchPoll: vi.fn(),
+    endNativeTwitchPoll: vi.fn(),
     listChatMessages: vi.fn(() => Promise.resolve([])),
     listInteractions: vi.fn(() => Promise.resolve([{
       id: 41, kind: "question", canonical_text: "Which GPU are you using?", summary: "GPU question",
@@ -201,6 +206,41 @@ describe("StreamPilot starter dashboard", () => {
     expect(await screen.findByText("Messages per minute")).toBeInTheDocument();
     expect(screen.getByText("What GPU?")).toBeInTheDocument();
     expect(screen.getByText("Top unanswered questions")).toBeInTheDocument();
+  });
+
+  it("enables native polls only from Settings and prompts Twitch reauthorization", async () => {
+    vi.mocked(api.getStatus).mockResolvedValueOnce({ demo_mode: false, gemini_configured: true, twitch_configured: true, twitch_authorized: true, integrations_verified: false });
+    vi.mocked(api.saveNativePollSettings).mockResolvedValueOnce({ enabled: true, reauthorization_required: true, message: "Reconnect Twitch." });
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Native Twitch polls")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Enable native polls" }));
+    expect(await screen.findByRole("link", { name: "Re-authorize Twitch" })).toHaveAttribute("href", "/auth/twitch");
+    expect(api.saveNativePollSettings).toHaveBeenCalledWith(true);
+  });
+
+  it("falls back to the existing vote challenge when Twitch rejects native poll eligibility", async () => {
+    const suggestion = { id: 33, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"], duration_seconds: 30, source_group_ids: [], status: "suggested" as const, created_at: new Date().toISOString(), supporting_messages: [] };
+    const draft = { id: 80, title: suggestion.title, question: suggestion.title, reason: "poll", duration_seconds: 30, source: "gemini" as const, status: "draft" as const, approved: false, total_votes: 0, winning_option_id: null, options: [{ id: 1, label: "Ranked", description: "", position: 1, votes: 0 }, { id: 2, label: "Casual", description: "", position: 2, votes: 0 }] };
+    vi.mocked(api.getNativePollSettings).mockResolvedValue({ enabled: true, reauthorization_required: false, message: "Enabled" });
+    vi.mocked(api.listPollSuggestions).mockResolvedValue([suggestion]);
+    vi.mocked(api.approvePollSuggestion).mockResolvedValue(draft);
+    vi.mocked(api.createNativeTwitchPoll).mockRejectedValue(new Error("This Twitch channel must be an Affiliate or Partner to create native polls. Your approved suggestion can use the StreamPilot !vote N fallback."));
+    vi.mocked(api.approveChallenge).mockResolvedValue({ ...draft, approved: true });
+    vi.mocked(api.launchChallenge).mockResolvedValue({ ...draft, status: "active", approved: true });
+    const sockets: MockSocket[] = [];
+    class MockSocket { onopen: (() => void) | null = null; onmessage: ((event:{data:string})=>void) | null = null; onerror:(()=>void)|null=null; onclose:(()=>void)|null=null; constructor(){sockets.push(this);} close(){this.onclose?.();} }
+    vi.stubGlobal("WebSocket", MockSocket);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    await screen.findByText("Native Twitch polls");
+    fireEvent.click(screen.getByRole("button", { name: "Live Studio" }));
+    expect(await screen.findByRole("button", { name: /approve & create twitch poll/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /approve & create twitch poll/i }));
+    await waitFor(() => expect(api.launchChallenge).toHaveBeenCalledWith(80));
+    expect(api.createNativeTwitchPoll).toHaveBeenCalledWith(33, 30);
+    expect(await screen.findByText(/Started this approved suggestion with StreamPilot !vote N instead/i)).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
   it("shows conservative moderation flags and lets the streamer dismiss one", async () => {

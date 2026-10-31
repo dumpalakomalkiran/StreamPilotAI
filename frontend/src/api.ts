@@ -70,6 +70,11 @@ export interface PollSuggestion {
   created_at: string;
   supporting_messages: Array<{ display_name: string; text: string; created_at: string }>;
 }
+export interface NativeTwitchPoll {
+  id: number; suggestion_id: number; challenge_id: number; twitch_poll_id: string; title: string;
+  options: string[]; duration_seconds: number; status: string; started_at: string; ended_at: string | null;
+}
+export interface NativePollSettings { enabled: boolean; reauthorization_required: boolean; message: string }
 
 export interface AnalyticsSnapshot {
   session_id: number | null; total_messages: number; unique_chatters: number; questions_detected: number;
@@ -149,6 +154,11 @@ export const api = {
   approvePollSuggestion: (id: number, payload: { title: string; options: string[]; duration_seconds: number }) =>
     request<Challenge>(`/api/polls/suggestions/${id}/approve`, { method: "POST", body: JSON.stringify(payload) }),
   dismissPollSuggestion: (id: number) => request<PollSuggestion>(`/api/polls/suggestions/${id}/dismiss`, { method: "POST" }),
+  getNativePollSettings: () => request<NativePollSettings>("/api/settings/native-polls"),
+  saveNativePollSettings: (enabled: boolean) => request<NativePollSettings>("/api/settings/native-polls", { method: "PUT", body: JSON.stringify({ enabled }) }),
+  listNativeTwitchPolls: () => request<NativeTwitchPoll[]>("/api/polls/twitch"),
+  createNativeTwitchPoll: (suggestion_id: number, duration_seconds?: number) => request<NativeTwitchPoll>("/api/polls/twitch/create", { method: "POST", body: JSON.stringify({ suggestion_id, duration_seconds }) }),
+  endNativeTwitchPoll: (id: number) => request<NativeTwitchPoll>(`/api/polls/twitch/${id}/end`, { method: "POST" }),
   listChatMessages: (limit = 50) => request<ChatMessage[]>(`/api/chat/messages?limit=${limit}`),
   listInteractions: (filters: { status?: string; kind?: string; q?: string } = {}) => {
     const query = new URLSearchParams();

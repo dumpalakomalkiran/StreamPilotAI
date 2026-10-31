@@ -107,3 +107,24 @@ curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moder
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents/12/dismiss'
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents/12/reviewed'
 ```
+
+## Optional native Twitch polls
+Native polls are disabled by default. Turning on `PUT /api/settings/native-polls` records the broadcaster's preference and reports whether Twitch reauthorization is required; the optional `channel:manage:polls` OAuth scope is requested only on a subsequent `/auth/twitch` authorization start while that broadcaster's authenticated session is present. Disabling the feature does not request the scope. Reauthorization replaces the stored OAuth grant with the selected scopes. Existing `!vote N` challenge creation remains available at all times.
+
+The current [Twitch Create Poll reference](https://dev.twitch.tv/docs/api/reference/#create-poll) requires a user token with `channel:manage:polls`; title max 60 characters; 2–5 choices; choice title max 25 characters; duration 15–1800 seconds. Twitch starts the poll immediately and allows one active poll at a time. Twitch returns 400 for invalid bounds or an already-running poll, 401 for missing scope/invalid identity/token, 403 when the channel is not Affiliate or Partner, and 429 for rate limiting. StreamPilot maps these to safe errors. The Affiliate/Partner error message explicitly offers the existing `!vote N` path; the dashboard starts that path only after the streamer chose “Approve & create Twitch poll.”
+
+- `GET /api/settings/native-polls`: read the opt-in and `reauthorization_required` state.
+- `PUT /api/settings/native-polls` with `{"enabled":true}`: enable and prompt for Twitch reauthorization; `false` disables the feature.
+- `GET /api/polls/twitch`: list this broadcaster's locally tracked polls and sync their status from Helix when the option is enabled and the scope is present.
+- `POST /api/polls/twitch/create` with `{"suggestion_id":7,"duration_seconds":300}`: create a Twitch poll from an already approved suggestion. The approved challenge draft is retained, allowing fallback to `!vote N` if Twitch rejects eligibility.
+- `POST /api/polls/twitch/{id}/end`: terminate the broadcaster-owned active poll, preserving visible results.
+
+Before creation StreamPilot checks its active challenge/tracked poll state and queries Twitch for active polls; it also serializes per-broadcaster create requests in the current single-process deployment. No AI worker creates or ends native polls. `NativeTwitchPoll` stores broadcaster/session, approved suggestion and challenge references, Twitch poll ID, title/options/duration and status. Schema creation is additive through `Base.metadata.create_all`; an existing-database helper adds the optional preference and approved challenge link columns.
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/settings/native-polls'
+curl -X PUT -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"enabled":true}' 'http://localhost:8000/api/settings/native-polls'
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/polls/twitch'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"suggestion_id":7,"duration_seconds":300}' 'http://localhost:8000/api/polls/twitch/create'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/polls/twitch/1/end'
+```

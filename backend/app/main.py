@@ -54,6 +54,10 @@ from app.schemas import (
     InteractionDetailResponse,
     InteractionGroupResponse,
     ModerationIncidentResponse,
+    NativePollSettingsRequest,
+    NativePollSettingsResponse,
+    NativeTwitchPollCreateRequest,
+    NativeTwitchPollResponse,
     OverlayTokenResponse,
     PollSuggestionApproval,
     PollSuggestionResponse,
@@ -65,6 +69,7 @@ from app.schemas import (
     StreamFactsRequest,
     StreamFactsResponse,
 )
+from app.services import twitch_polls
 from app.services.analytics import (
     current_analytics,
     generate_summary_async,
@@ -285,8 +290,18 @@ async def suggest_challenge(
     description="Creates an OAuth state cookie and redirects the browser to Twitch. The callback returns to the configured `TWITCH_REDIRECT_URI`.",
     responses={302: {"description": "Redirect to Twitch authorization."}},
 )
-async def twitch_authorize() -> RedirectResponse:
-    url, state = create_authorization_url()
+async def twitch_authorize(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
+    include_native_polls = False
+    session_token = request.cookies.get("stream_pilot_session")
+    if session_token:
+        credential = db.scalar(select(TwitchCredential).where(
+            TwitchCredential.auth_session_hash == _hash_token(session_token),
+            TwitchCredential.auth_session_expires_at > datetime.now(UTC),
+        ))
+        if credential:
+            preference = db.get(BroadcasterSettings, credential.broadcaster_id)
+            include_native_polls = bool(preference and preference.native_twitch_polls_enabled)
+    url, state = create_authorization_url(include_native_polls=include_native_polls)
     response = RedirectResponse(url, status_code=302)
     response.set_cookie(
         "twitch_oauth_state", state, max_age=600, httponly=True,
@@ -571,6 +586,68 @@ def put_stream_facts(payload: StreamFactsRequest, db: Session = Depends(get_db),
         row.stream_facts = payload.stream_facts.strip()
     db.commit()
     return {"stream_facts": row.stream_facts}
+
+
+def _native_poll_settings_payload(db: Session, broadcaster_id: str) -> dict[str, object]:
+    preference = db.get(BroadcasterSettings, broadcaster_id)
+    enabled = bool(preference and preference.native_twitch_polls_enabled)
+    credential = db.get(TwitchCredential, broadcaster_id)
+    has_scope = bool(credential and twitch_polls.NATIVE_POLL_SCOPE in set(credential.scopes.split()))
+    required = enabled and not has_scope
+    return {
+        "enabled": enabled,
+        "reauthorization_required": required,
+        "message": "Reconnect Twitch to grant channel:manage:polls before creating native polls." if required
+                   else "Native Twitch poll creation is enabled." if enabled
+                   else "Native Twitch polls are off. Existing StreamPilot !vote N polls remain available.",
+    }
+
+
+@app.get("/api/settings/native-polls", response_model=NativePollSettingsResponse, tags=["Settings"],
+         summary="Read optional native Twitch poll setting",
+         description="Native polls are off by default. Enabling them never creates a poll; it prompts the streamer to reconnect and grant `channel:manage:polls`.")
+def get_native_poll_settings(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    return _native_poll_settings_payload(db, broadcaster_id)
+
+
+@app.put("/api/settings/native-polls", response_model=NativePollSettingsResponse, tags=["Settings"],
+         summary="Enable or disable native Twitch polls",
+         description="The `channel:manage:polls` OAuth scope is requested only after the streamer explicitly enables this setting. Existing scopes are unchanged when disabled.")
+def put_native_poll_settings(payload: NativePollSettingsRequest, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    row = db.get(BroadcasterSettings, broadcaster_id)
+    if row is None:
+        row = BroadcasterSettings(broadcaster_id=broadcaster_id, stream_facts="", native_twitch_polls_enabled=payload.enabled)
+        db.add(row)
+    else:
+        row.native_twitch_polls_enabled = payload.enabled
+    db.commit()
+    return _native_poll_settings_payload(db, broadcaster_id)
+
+
+@app.get("/api/polls/twitch", response_model=list[NativeTwitchPollResponse], tags=["Native Twitch polls"],
+         summary="List native Twitch polls created by StreamPilot",
+         description="Returns this broadcaster's tracked Twitch poll IDs and statuses. When enabled and authorized, status is refreshed from Twitch Helix.")
+async def list_native_twitch_polls(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    return await twitch_polls.list_native_polls(db, broadcaster_id)
+
+
+@app.post("/api/polls/twitch/create", response_model=NativeTwitchPollResponse, status_code=201, tags=["Native Twitch polls"],
+          summary="Create an approved suggestion as a Twitch poll",
+          description="Creates a real poll immediately on Twitch only after explicit streamer action. Requires an enabled setting, granted scope, Affiliate/Partner eligibility, and no active Twitch or StreamPilot poll.",
+          responses={201: {"description": "Twitch poll created and tracked."},
+                     403: {"description": "Channel is not eligible for native Twitch polls; use the existing StreamPilot !vote N challenge."},
+                     409: {"description": "Setting/scope missing, suggestion not approved, or another poll is active."},
+                     429: {"description": "Twitch rate limit reached."}})
+async def create_native_twitch_poll(payload: NativeTwitchPollCreateRequest, db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    return await twitch_polls.create_native_poll(db, broadcaster_id, payload.suggestion_id, payload.duration_seconds)
+
+
+@app.post("/api/polls/twitch/{poll_id}/end", response_model=NativeTwitchPollResponse, tags=["Native Twitch polls"],
+          summary="End a tracked native Twitch poll",
+          description="Ends the broadcaster-owned active poll through Twitch Helix using status `TERMINATED`, which keeps its public results visible.",
+          responses={404: {"description": "Tracked poll not found for this broadcaster."}, 409: {"description": "Poll is no longer active or scope/authorization is missing."}})
+async def end_native_twitch_poll(poll_id: int = Path(ge=1), db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    return await twitch_polls.end_native_poll(db, broadcaster_id, poll_id)
 
 
 @app.get(
@@ -969,6 +1046,14 @@ def approve_poll_suggestion(
 ) -> dict[str, object]:
     suggestion = _scoped_poll_suggestion(db, suggestion_id, broadcaster_id)
     if suggestion.status != "suggested":
+        if suggestion.status == "approved" and suggestion.approved_challenge_id is not None:
+            existing = db.scalar(select(Challenge).where(
+                Challenge.id == suggestion.approved_challenge_id,
+                Challenge.status == "draft",
+                Challenge.approved.is_(False),
+            ))
+            if existing is not None:
+                return challenge_payload(db, loaded_challenge(db, existing.id))
         raise HTTPException(status_code=409, detail="Poll suggestion is no longer pending")
     if db.scalar(select(Challenge.id).where(Challenge.status == "active")):
         raise HTTPException(status_code=409, detail="Another challenge is active")
@@ -990,6 +1075,7 @@ def approve_poll_suggestion(
     suggestion.options = payload.options
     suggestion.duration_seconds = payload.duration_seconds
     suggestion.status = "approved"
+    suggestion.approved_challenge_id = challenge.id
     db.commit()
     db.refresh(challenge)
     return challenge_payload(db, loaded_challenge(db, challenge.id))

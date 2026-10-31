@@ -177,6 +177,7 @@ class BroadcasterSettings(Base):
     __tablename__ = "broadcaster_settings"
     broadcaster_id: Mapped[str] = mapped_column(String(80), primary_key=True)
     stream_facts: Mapped[str] = mapped_column(Text, default="")
+    native_twitch_polls_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
@@ -218,6 +219,28 @@ class PollSuggestion(Base):
     supporting_message_ids: Mapped[list[str]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="suggested", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    approved_challenge_id: Mapped[int | None] = mapped_column(ForeignKey("challenges.id"), nullable=True)
+
+
+class NativeTwitchPoll(Base):
+    __tablename__ = "native_twitch_polls"
+    __table_args__ = (
+        UniqueConstraint("twitch_poll_id", name="uq_native_twitch_poll_id"),
+        UniqueConstraint("suggestion_id", name="uq_native_twitch_poll_suggestion"),
+        Index("ix_native_twitch_poll_scope_status", "broadcaster_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    suggestion_id: Mapped[int] = mapped_column(ForeignKey("poll_suggestions.id"), index=True)
+    challenge_id: Mapped[int] = mapped_column(ForeignKey("challenges.id"), index=True)
+    twitch_poll_id: Mapped[str] = mapped_column(String(128))
+    title: Mapped[str] = mapped_column(String(60))
+    options: Mapped[list[str]] = mapped_column(JSON)
+    duration_seconds: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(16), default="ACTIVE", index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SessionSummary(Base):

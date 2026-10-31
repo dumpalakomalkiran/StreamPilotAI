@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import TwitchCredential
 
-_pending_states: dict[str, float] = {}
+_pending_states: dict[str, tuple[float, frozenset[str]]] = {}
 _refresh_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
 
 
@@ -38,23 +38,33 @@ def decrypt_token(token: str) -> str:
         raise HTTPException(status_code=401, detail="Stored Twitch authorization must be renewed") from exc
 
 
-def create_authorization_url() -> tuple[str, str]:
+NATIVE_POLL_SCOPE = "channel:manage:polls"
+
+
+def create_authorization_url(include_native_polls: bool = False) -> tuple[str, str]:
     settings = get_settings()
     if not settings.twitch_client_id or not settings.twitch_client_secret:
         raise HTTPException(status_code=503, detail="Twitch authorization is not configured")
     now = time.monotonic()
-    for state, created in list(_pending_states.items()):
+    for state, entry in list(_pending_states.items()):
+        created = entry[0] if isinstance(entry, tuple) else entry
         if now - created > 600:
             _pending_states.pop(state, None)
     if len(_pending_states) >= 5_000:
         raise HTTPException(status_code=429, detail="Twitch authorization is busy. Try again shortly.")
     state = secrets.token_urlsafe(32)
-    _pending_states[state] = now
+    scopes = set(settings.twitch_scopes.split())
+    if include_native_polls:
+        scopes.add(NATIVE_POLL_SCOPE)
+    else:
+        scopes.discard(NATIVE_POLL_SCOPE)
+    requested_scopes = frozenset(scopes)
+    _pending_states[state] = (now, requested_scopes)
     query = urlencode({
         "client_id": settings.twitch_client_id,
         "redirect_uri": settings.twitch_redirect_uri,
         "response_type": "code",
-        "scope": settings.twitch_scopes,
+        "scope": " ".join(sorted(requested_scopes)),
         "state": state,
         "force_verify": "true",
     })
@@ -63,7 +73,8 @@ def create_authorization_url() -> tuple[str, str]:
 
 async def exchange_callback(code: str, state: str, cookie_state: str | None, db: Session) -> dict[str, str]:
     settings = get_settings()
-    created = _pending_states.pop(state, None)
+    state_entry = _pending_states.pop(state, None)
+    created = state_entry[0] if isinstance(state_entry, tuple) else state_entry
     if not cookie_state or not secrets.compare_digest(state, cookie_state) or created is None or time.monotonic() - created > 600:
         raise HTTPException(status_code=400, detail="OAuth state is invalid or expired")
     if not settings.twitch_client_id or not settings.twitch_client_secret:
@@ -91,7 +102,7 @@ async def exchange_callback(code: str, state: str, cookie_state: str | None, db:
             raise HTTPException(status_code=502, detail="Twitch authorization could not be completed") from exc
 
     broadcaster_id = str(user["id"])
-    required_scopes = set(settings.twitch_scopes.split())
+    required_scopes = set(state_entry[1]) if isinstance(state_entry, tuple) else set(settings.twitch_scopes.split())
     if not required_scopes.issubset(set(token.get("scope", []))):
         raise HTTPException(status_code=403, detail="Twitch did not grant the required chat permissions")
     expires_at = datetime.now(UTC) + timedelta(seconds=max(0, int(token.get("expires_in", 0))))
