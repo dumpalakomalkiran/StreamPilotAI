@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -94,6 +95,47 @@ class ChatMessage(Base):
     display_name: Mapped[str] = mapped_column(String(80), default="Viewer")
     text: Mapped[str] = mapped_column(String(500))
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class InteractionGroup(Base):
+    __tablename__ = "interaction_groups"
+    __table_args__ = (Index("ix_interaction_group_scope_status", "broadcaster_id", "session_id", "status"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="question")
+    canonical_text: Mapped[str] = mapped_column(String(500))
+    normalized_text: Mapped[str] = mapped_column(String(500), default="")
+    summary: Mapped[str] = mapped_column(String(500), default="")
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    snoozed_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority_score: Mapped[float] = mapped_column(Float, default=0)
+    priority_asker_component: Mapped[float] = mapped_column(Float, default=0)
+    priority_recency_component: Mapped[float] = mapped_column(Float, default=0)
+    priority_repetition_component: Mapped[float] = mapped_column(Float, default=0)
+    asker_count: Mapped[int] = mapped_column(Integer, default=0)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    closed_asker_count: Mapped[int] = mapped_column(Integer, default=0)
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    members: Mapped[list["Interaction"]] = relationship(back_populates="group", cascade="all, delete-orphan")
+
+
+class Interaction(Base):
+    __tablename__ = "interactions"
+    __table_args__ = (
+        Index("ix_interaction_pending", "broadcaster_id", "group_id"),
+        UniqueConstraint("chat_message_id", name="uq_interaction_chat_message"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    group_id: Mapped[int | None] = mapped_column(ForeignKey("interaction_groups.id"), nullable=True)
+    chat_message_id: Mapped[str] = mapped_column(ForeignKey("chat_messages.event_id", ondelete="CASCADE"))
+    user_login_hash: Mapped[str] = mapped_column(String(64))
+    text: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    group: Mapped[InteractionGroup | None] = relationship(back_populates="members")
 
 
 class DeletedChatMessage(Base):

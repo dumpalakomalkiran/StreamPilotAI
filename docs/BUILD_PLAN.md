@@ -22,3 +22,6 @@ Check rules/deadline, repository/secret scan, honest demo evidence and Codex use
 
 ## Implemented areas — do not rebuild
 React dashboard/overlay; FastAPI/Pydantic; SQLAlchemy/SQLite; challenge lifecycle/voting; Gemini adapter; Twitch OAuth/token handling; EventSub chat/moderation; protected overlay/WebSocket; mocked tests; Docker/Compose/Nginx files. Presence in source is not proof of live verification.
+
+## Smart Interaction Queue — implementation added
+The backend queue adds EventSub question/request intake, same-session fuzzy grouping, optional bounded batched Gemini grouping with deterministic fallback, explainable priority, broadcaster-scoped lifecycle APIs and moderation cleanup. Its local tests are mocked and do not verify real Gemini/EventSub delivery. Frontend queue presentation remains a follow-up; the existing dashboard is preserved.

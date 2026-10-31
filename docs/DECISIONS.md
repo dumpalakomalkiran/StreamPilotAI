@@ -12,6 +12,7 @@
 - **ADR-010 Single process:** in-memory rate limit, worker and WebSocket registry are process-local; no horizontal replicas without shared coordination/leader ownership.
 - **ADR-011 Twitch scopes:** no speculative scope changes; verify exact current scope/token/identity requirements and record evidence.
 - **ADR-012 Next phase:** verify existing integrations and failure coverage before new features.
+- **ADR-013 Smart Interaction Queue:** persist eligible EventSub chat as broadcaster-scoped interactions; detect and fuzzy-group deterministically first; batch unmatched candidates to Gemini on a configurable interval/count with schema validation and deterministic fallback. Hash viewer identity with HMAC, persist score components, and remove queue entries when chat is moderated. New tables are additive via the existing metadata creation path because Alembic is not configured.
 
 ## 2026-11-01 — Stream lifecycle and database behavior
 - Use Twitch `stream.online`/`stream.offline` EventSub subscriptions to open and close the broadcaster's live session. Twitch documents these subscriptions as requiring no user scopes; preserve existing chat scopes unchanged.

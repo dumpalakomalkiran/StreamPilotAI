@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-3.5-flash-lite"
     ai_request_timeout_seconds: int = 20
+    interaction_llm_interval_seconds: int = 20
+    interaction_llm_batch_size: int = 8
+    interaction_fuzzy_threshold: float = 0.78
+    interaction_reopen_askers: int = 3
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
     twitch_redirect_uri: str = "http://localhost:8000/auth/twitch/callback"

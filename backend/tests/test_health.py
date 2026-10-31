@@ -23,6 +23,11 @@ def test_management_endpoints_require_authentication_in_live_mode(monkeypatch):
     assert client.get("/api/challenges").status_code == 401
     assert client.post("/api/challenges/suggest", json={"chat_messages": []}).status_code == 401
     assert client.post("/api/overlay/token").status_code == 401
+    assert client.get("/api/interactions").status_code == 401
+    assert client.get("/api/interactions/1").status_code == 401
+    assert client.post("/api/interactions/1/answer").status_code == 401
+    assert client.post("/api/interactions/1/dismiss").status_code == 401
+    assert client.post("/api/interactions/1/snooze", json={"minutes": 15}).status_code == 401
 
 def test_status_does_not_expose_secrets():
     body = client.get("/api/status").json()
@@ -69,6 +74,15 @@ def test_swagger_documents_api_details_and_examples():
     chat_schema_ref = chat["responses"]["200"]["content"]["application/json"]["schema"]["items"]["$ref"]
     chat_model = schema["components"]["schemas"][chat_schema_ref.split("/")[-1]]
     assert chat_model["examples"][0]["text"] == "Take the left path!"
+
+    queue_list = paths["/api/interactions"]["get"]
+    assert queue_list["summary"] and queue_list["description"]
+    assert {parameter["name"] for parameter in queue_list["parameters"]} == {"status", "kind", "q"}
+    snooze = paths["/api/interactions/{interaction_id}/snooze"]["post"]
+    assert snooze["summary"] and snooze["description"]
+    snooze_ref = snooze["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    snooze_model = schema["components"]["schemas"][snooze_ref.split("/")[-1]]
+    assert snooze_model["examples"][0] == {"minutes": 15}
 
     documented_api_methods = [
         operation

@@ -23,6 +23,11 @@ from app.models import (
     StreamSession,
     TwitchCredential,
 )
+from app.services.interactions import (
+    delete_interactions_for_chat_messages,
+    event_is_emote_only,
+    ingest_message,
+)
 from app.services.overlay import broadcast
 from app.services.twitch_auth import refresh_access_token_if_needed
 from app.services.voting import cast_vote
@@ -140,6 +145,7 @@ def _process_chat_removal(
                 logger.warning("Malformed Twitch chat deletion skipped (missing or invalid message ID)")
                 return
             _remember_deleted_messages(db, session.id, [message_id])
+            delete_interactions_for_chat_messages(db, [message_id])
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
                 ChatMessage.event_id == message_id,
@@ -154,6 +160,7 @@ def _process_chat_removal(
                 ChatMessage.chatter_id == target_user_id[:80],
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
+            delete_interactions_for_chat_messages(db, affected_ids)
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
                 ChatMessage.chatter_id == target_user_id[:80],
@@ -163,6 +170,7 @@ def _process_chat_removal(
                 ChatMessage.session_id == session.id
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
+            delete_interactions_for_chat_messages(db, affected_ids)
             result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
         else:
             return
@@ -200,10 +208,24 @@ def _process_chat_message(
                 text=message[:500].replace("\x00", ""),
             ).on_conflict_do_nothing(index_elements=[ChatMessage.event_id]))
             if inserted.rowcount:
+                chat_row = db.get(ChatMessage, event_id[:128])
+                if chat_row:
+                    message_payload = event.get("message", {})
+                    ingest_message(
+                        db, broadcaster_id=broadcaster_id, session=session,
+                        chat_message=chat_row,
+                        is_bot=bool(event.get("chatter_is_verified_bot"))
+                        or str(event.get("chatter_type", "")).casefold() == "bot"
+                        or str(event.get("chatter_user_login", "")).casefold().endswith("bot"),
+                        is_emote_only=event_is_emote_only(
+                            message_payload.get("fragments") if isinstance(message_payload, dict) else None
+                        ),
+                    )
                 oldest = db.scalars(select(ChatMessage.event_id).where(
                     ChatMessage.session_id == session.id
                 ).order_by(ChatMessage.received_at.desc(), ChatMessage.event_id.desc()).offset(500)).all()
                 if oldest:
+                    delete_interactions_for_chat_messages(db, oldest)
                     db.execute(delete(ChatMessage).where(ChatMessage.event_id.in_(oldest)))
                 db.commit()
     finally:

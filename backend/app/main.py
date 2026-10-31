@@ -26,18 +26,29 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.database import Base, engine, get_db, upgrade_schema
-from app.models import Challenge, ChatMessage, StreamSession, TwitchCredential
+from app.models import (
+    Challenge,
+    ChatMessage,
+    Interaction,
+    InteractionGroup,
+    StreamSession,
+    TwitchCredential,
+)
 from app.schemas import (
     ChallengeProposal,
     ChallengeResponse,
     ChatMessageResponse,
     HealthResponse,
+    InteractionDetailResponse,
+    InteractionGroupResponse,
     OverlayTokenResponse,
+    SnoozeInteractionRequest,
     StatusResponse,
 )
 from app.services.challenge_clock import run_challenge_clock
 from app.services.challenges import generate_challenge
 from app.services.eventsub import run_eventsub
+from app.services.interactions import refresh_snoozed_groups, run_grouping_worker, score_group
 from app.services.overlay import broadcast as overlay_broadcast
 from app.services.overlay import connect as overlay_connect
 from app.services.overlay import disconnect as overlay_disconnect
@@ -71,6 +82,7 @@ app = FastAPI(
         {"name": "Twitch OAuth", "description": "Broadcaster authorization redirects and callback."},
         {"name": "Challenges", "description": "Suggest, review, launch, and end streamer-approved challenges."},
         {"name": "Chat", "description": "Recent live chat signals after Twitch moderation deletions are applied."},
+        {"name": "Interactions", "description": "Prioritized, grouped viewer questions and requests."},
         {"name": "Overlay", "description": "Create a private browser overlay credential."},
     ],
 )
@@ -182,6 +194,7 @@ def _authorized_broadcaster() -> str | None:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     app.state.challenge_clock_task = asyncio.create_task(run_challenge_clock())
+    app.state.interaction_grouping_task = asyncio.create_task(run_grouping_worker())
     if not settings.demo_mode:
         broadcaster_id = await run_in_threadpool(_authorized_broadcaster)
         if broadcaster_id:
@@ -190,7 +203,7 @@ async def lifespan(application: FastAPI):
     try:
         yield
     finally:
-        for task_name in ("eventsub_task", "challenge_clock_task"):
+        for task_name in ("eventsub_task", "challenge_clock_task", "interaction_grouping_task"):
             task = getattr(app.state, task_name, None)
             if task and not task.done():
                 task.cancel()
@@ -336,6 +349,151 @@ def list_chat_messages(
         {"display_name": message.display_name, "text": message.text, "received_at": message.received_at}
         for message in reversed(messages)
     ]
+
+
+def _interaction_payload(db: Session, group: InteractionGroup, *, include_messages: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": group.id, "kind": group.kind, "canonical_text": group.canonical_text,
+        "summary": group.summary, "status": group.status, "snoozed_until": group.snoozed_until,
+        "priority_score": group.priority_score,
+        "priority_components": {
+            "askers": group.priority_asker_component,
+            "recency": group.priority_recency_component,
+            "repetition": group.priority_repetition_component,
+        },
+        "asker_count": group.asker_count, "message_count": group.message_count,
+        "first_seen_at": group.first_seen_at, "last_seen_at": group.last_seen_at,
+        "answered_at": group.answered_at,
+    }
+    if include_messages:
+        rows = db.execute(select(Interaction, ChatMessage.display_name).join(
+            ChatMessage, ChatMessage.event_id == Interaction.chat_message_id
+        ).where(
+            Interaction.broadcaster_id == group.broadcaster_id,
+            Interaction.group_id == group.id,
+        ).order_by(Interaction.created_at)).all()
+        payload["messages"] = [
+            {"display_name": display_name, "text": interaction.text, "created_at": interaction.created_at}
+            for interaction, display_name in rows
+        ]
+    return payload
+
+
+def _scoped_interaction_group(db: Session, group_id: int, broadcaster_id: str) -> InteractionGroup:
+    group = db.scalar(select(InteractionGroup).join(
+        StreamSession, StreamSession.id == InteractionGroup.session_id
+    ).where(
+        InteractionGroup.id == group_id,
+        InteractionGroup.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+    ))
+    if group is None:
+        raise HTTPException(status_code=404, detail="Interaction not found")
+    return group
+
+
+@app.get(
+    "/api/interactions", response_model=list[InteractionGroupResponse], tags=["Interactions"],
+    summary="List prioritized chat interactions",
+    description="Lists grouped viewer questions and requests for the authenticated broadcaster, sorted by deterministic priority. Moderated messages are removed from the queue.",
+    responses={401: {"description": "Broadcaster session is missing or expired."}},
+)
+def list_interactions(
+    status: str | None = Query(default=None, pattern="^(open|answered|snoozed|dismissed)$"),
+    kind: str | None = Query(default=None, pattern="^(question|request|suggestion|other)$"),
+    q: str | None = Query(default=None, max_length=120, description="Search canonical text and summary."),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer),
+) -> list[dict[str, object]]:
+    refresh_snoozed_groups(db, broadcaster_id)
+    db.commit()
+    statement = select(InteractionGroup).join(
+        StreamSession, StreamSession.id == InteractionGroup.session_id
+    ).where(
+        InteractionGroup.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+    )
+    if status:
+        statement = statement.where(InteractionGroup.status == status)
+    if kind:
+        statement = statement.where(InteractionGroup.kind == kind)
+    if q:
+        search = f"%{q.strip()}%"
+        statement = statement.where(
+            InteractionGroup.canonical_text.ilike(search) | InteractionGroup.summary.ilike(search)
+        )
+    groups = db.scalars(statement).all()
+    now = datetime.now(UTC)
+    for group in groups:
+        score_group(group, now)
+    db.commit()
+    groups.sort(key=lambda group: (
+        group.priority_score,
+        group.last_seen_at.replace(tzinfo=UTC) if group.last_seen_at.tzinfo is None else group.last_seen_at,
+    ), reverse=True)
+    groups = groups[:200]
+    return [_interaction_payload(db, group) for group in groups]
+
+
+@app.get(
+    "/api/interactions/{interaction_id}", response_model=InteractionDetailResponse, tags=["Interactions"],
+    summary="Read an interaction and its member messages",
+    description="Returns the interaction group and its retained, non-moderated member chat messages for the authenticated broadcaster.",
+    responses={401: {"description": "Broadcaster session is missing or expired."}, 404: {"description": "Interaction not found for this broadcaster."}},
+)
+def get_interaction(
+    interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+    broadcaster_id: str = Depends(require_streamer),
+) -> dict[str, object]:
+    group = _scoped_interaction_group(db, interaction_id, broadcaster_id)
+    return _interaction_payload(db, group, include_messages=True)
+
+
+def _transition_interaction(db: Session, interaction_id: int, broadcaster_id: str, action: str,
+                            minutes: int | None = None) -> dict[str, object]:
+    group = _scoped_interaction_group(db, interaction_id, broadcaster_id)
+    refresh_snoozed_groups(db, broadcaster_id)
+    if group.status != "open":
+        raise HTTPException(status_code=409, detail="Only open interactions can be updated")
+    if action == "answer":
+        group.status = "answered"
+        group.answered_at = datetime.now(UTC)
+        group.closed_asker_count = group.asker_count
+    elif action == "dismiss":
+        group.status = "dismissed"
+        group.closed_asker_count = group.asker_count
+    else:
+        group.status = "snoozed"
+        group.snoozed_until = datetime.now(UTC) + timedelta(minutes=minutes or 1)
+    db.commit()
+    db.refresh(group)
+    return _interaction_payload(db, group, include_messages=True)
+
+
+@app.post(
+    "/api/interactions/{interaction_id}/answer", response_model=InteractionDetailResponse, tags=["Interactions"],
+    summary="Mark an interaction answered", description="Marks an open interaction as answered and records the time. Only the owning broadcaster can update it.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
+)
+def answer_interaction(interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+                       broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
+    return _transition_interaction(db, interaction_id, broadcaster_id, "answer")
+
+
+@app.post(
+    "/api/interactions/{interaction_id}/dismiss", response_model=InteractionDetailResponse, tags=["Interactions"],
+    summary="Dismiss an interaction", description="Dismisses an open interaction for this broadcaster; enough distinct new askers can reopen it later.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
+)
+def dismiss_interaction(interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+                        broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
+    return _transition_interaction(db, interaction_id, broadcaster_id, "dismiss")
+
+
+@app.post(
+    "/api/interactions/{interaction_id}/snooze", response_model=InteractionDetailResponse, tags=["Interactions"],
+    summary="Snooze an interaction", description="Snoozes an open interaction for the requested number of minutes (1–1440); it reopens automatically at expiry.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
+)
+def snooze_interaction(payload: SnoozeInteractionRequest, interaction_id: int = Path(ge=1),
+                       db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
+    return _transition_interaction(db, interaction_id, broadcaster_id, "snooze", payload.minutes)
 
 
 @app.post(

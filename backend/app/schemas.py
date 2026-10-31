@@ -126,6 +126,46 @@ class ChatMessageResponse(BaseModel):
     received_at: datetime
 
 
+class InteractionMessageResponse(BaseModel):
+    display_name: str
+    text: str
+    created_at: datetime
+
+
+class InteractionGroupResponse(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "id": 42, "kind": "question", "canonical_text": "Can my GPU run this game?",
+        "summary": "Viewers are asking whether their GPU can run the game.", "status": "open",
+        "snoozed_until": None, "priority_score": 11.92,
+        "priority_components": {"askers": 8.96, "recency": 2.96, "repetition": 0.0},
+        "asker_count": 6, "message_count": 6,
+        "first_seen_at": "2026-11-01T12:00:00Z", "last_seen_at": "2026-11-01T12:05:00Z",
+        "answered_at": None,
+    }]})
+    id: int
+    kind: str
+    canonical_text: str
+    summary: str
+    status: str
+    snoozed_until: datetime | None
+    priority_score: float
+    priority_components: dict[str, float]
+    asker_count: int
+    message_count: int
+    first_seen_at: datetime
+    last_seen_at: datetime
+    answered_at: datetime | None
+
+
+class InteractionDetailResponse(InteractionGroupResponse):
+    messages: list[InteractionMessageResponse]
+
+
+class SnoozeInteractionRequest(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"minutes": 15}]})
+    minutes: int = Field(ge=1, le=1440)
+
+
 class OverlayTokenResponse(BaseModel):
     model_config = ConfigDict(json_schema_extra={"examples": [{
         "token": "example-token-not-real",

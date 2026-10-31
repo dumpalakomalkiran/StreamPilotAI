@@ -11,6 +11,7 @@ from app.models import (
     ChallengeOption,
     ChatMessage,
     DeletedChatMessage,
+    Interaction,
     StreamSession,
     Vote,
 )
@@ -128,6 +129,38 @@ async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch
             select(ChallengeOption.id).where(ChallengeOption.position == 2)
         )
 
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_eventsub_chat_question_is_queued_once_and_moderation_removes_it(monkeypatch) -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    test_sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with test_sessions() as db:
+        db.add(StreamSession(broadcaster_id="broadcaster-1", mode="live"))
+        db.commit()
+    monkeypatch.setattr(eventsub, "SessionLocal", test_sessions)
+    metadata = {"subscription_type": "channel.chat.message", "message_id": "question-event"}
+    message = {"event": {
+        "broadcaster_user_id": "broadcaster-1", "chatter_user_id": "viewer-1",
+        "chatter_user_name": "Viewer One", "message": {"text": "How do I find the GPU upgrade?"},
+    }}
+    await eventsub._process_notification("broadcaster-1", metadata, message)
+    await eventsub._process_notification("broadcaster-1", metadata, message)
+    with test_sessions() as db:
+        queued = db.scalars(select(Interaction)).all()
+        assert len(queued) == 1
+        assert queued[0].chat_message_id == "question-event"
+        assert queued[0].group_id is None
+
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "channel.chat.message_delete"},
+        {"event": {"broadcaster_user_id": "broadcaster-1", "message_id": "question-event"}},
+    )
+    with test_sessions() as db:
+        assert db.scalars(select(Interaction)).all() == []
     Base.metadata.drop_all(engine)
     engine.dispose()
 

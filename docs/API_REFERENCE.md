@@ -24,4 +24,23 @@ In live mode `/api` management routes use HttpOnly `stream_pilot_session` from T
 - `POST /api/overlay/token`: issue/rotate private token and OBS URL; treat as bearer secret.
 - `WS /ws/overlay`: subprotocols `streampilot-overlay` and private token. Events: `connection.status`, `challenge.started`, `vote.updated`, `challenge.completed`; reconnect receives current state.
 
+## Smart Interaction Queue
+All queue routes use the same authenticated broadcaster session as challenge management. Data queries constrain both the row's `broadcaster_id` and its owning `StreamSession`. List order is deterministic priority descending (distinct askers, recency, repeated messages); `priority_components` explains the score. Unmatched candidates are batched for Gemini, with deterministic fallback if Gemini is unavailable. Deleted/cleared Twitch messages are removed from the queue too.
+
+- `GET /api/interactions?status=open&kind=question&q=gpu`: list up to 200 groups; filters are optional. `status` is `open|answered|snoozed|dismissed`; `kind` is `question|request|suggestion|other`.
+- `GET /api/interactions/{id}`: one group plus member messages.
+- `POST /api/interactions/{id}/answer`: mark an open group answered.
+- `POST /api/interactions/{id}/dismiss`: dismiss an open group.
+- `POST /api/interactions/{id}/snooze` with `{"minutes":15}`: snooze for 1–1440 minutes. Expired snoozes reopen automatically.
+
+Example requests (replace the cookie placeholder with the browser's authenticated session; do not commit or share it):
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/interactions?status=open&kind=question&q=gpu'
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/interactions/42'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/interactions/42/answer'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/interactions/42/dismiss'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"minutes":15}' 'http://localhost:8000/api/interactions/42/snooze'
+```
+
 Current EventSub types and scopes must be checked against current official docs before modification. Safe provider errors must never include keys, tokens, raw diagnostics or private chat.

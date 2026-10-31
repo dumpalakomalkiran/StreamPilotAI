@@ -9,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
+from app.models import ChatMessage, Interaction, InteractionGroup, StreamSession
 
 
 @pytest.fixture
@@ -91,3 +92,57 @@ def test_approval_launch_vote_change_and_close(client: TestClient) -> None:
     history = client.get("/api/challenges")
     assert history.status_code == 200
     assert history.json()[0]["id"] == challenge_id
+
+
+def test_interaction_api_lifecycle_and_broadcaster_scoping(client: TestClient) -> None:
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    demo_session = StreamSession(broadcaster_id="demo", mode="demo")
+    other_session = StreamSession(broadcaster_id="other-broadcaster", mode="live")
+    db.add_all([demo_session, other_session])
+    db.flush()
+    rows = []
+    for stream, text in (
+        (demo_session, "How do I find the key?"),
+        (demo_session, "Can you show the map?"),
+        (demo_session, "Where is the exit?"),
+        (other_session, "How do I find the key?"),
+    ):
+        group = InteractionGroup(
+            broadcaster_id=stream.broadcaster_id, session_id=stream.id,
+            kind="question", canonical_text=text, normalized_text=text.casefold(),
+            summary=text, status="open", asker_count=1, message_count=1,
+            priority_score=2.0,
+        )
+        db.add(group)
+        db.flush()
+        message = ChatMessage(
+            event_id=f"interaction-{len(rows)}", session_id=stream.id,
+            chatter_id=f"viewer-{len(rows)}", display_name=f"Viewer {len(rows)}", text=text,
+        )
+        db.add(message)
+        db.flush()
+        db.add(Interaction(
+            broadcaster_id=stream.broadcaster_id, group_id=group.id,
+            chat_message_id=message.event_id, user_login_hash=f"hash-{len(rows)}", text=text,
+        ))
+        rows.append(group)
+    db.commit()
+    for _ in db_generator:
+        pass
+
+    listed = client.get("/api/interactions").json()
+    assert len(listed) == 3
+    assert all(item["id"] != rows[3].id for item in listed)
+    assert client.get(f"/api/interactions/{rows[3].id}").status_code == 404
+
+    detail = client.get(f"/api/interactions/{rows[0].id}")
+    assert detail.status_code == 200
+    assert detail.json()["messages"][0]["text"] == "How do I find the key?"
+    assert client.post(f"/api/interactions/{rows[0].id}/answer").json()["status"] == "answered"
+    assert client.post(f"/api/interactions/{rows[1].id}/dismiss").json()["status"] == "dismissed"
+    snoozed = client.post(f"/api/interactions/{rows[2].id}/snooze", json={"minutes": 15})
+    assert snoozed.status_code == 200
+    assert snoozed.json()["status"] == "snoozed"
+    assert snoozed.json()["snoozed_until"] is not None
+    assert client.post(f"/api/interactions/{rows[2].id}/snooze", json={"minutes": 0}).status_code == 422

@@ -29,6 +29,12 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T23 | Frontend errors/demo-live | Useful errors; synthetic data labelled |
 | T24 | Frontend typecheck/build | Pass |
 | T25 | Compose/secret scan | Clean build, DB persistence, WebSocket proxy, no secrets tracked |
+| T26 | Interaction detection | English/Hinglish questions and requests accepted; commands/emote-only/broadcaster/bot messages ignored |
+| T27 | Interaction grouping | Six GPU questions with varied phrasing join one same-session group; distinct asker/message counts are correct |
+| T28 | Gemini batch grouping | Mocked valid schema attaches to group; invalid schema and timeout use deterministic fallback; no per-message model call |
+| T29 | Interaction priority | Explainable asker/recency/repetition components order groups deterministically |
+| T30 | Interaction lifecycle | Answer, dismiss, snooze expiry and new-asker reopen behave as configured |
+| T31 | Interaction tenant/privacy | List/detail/actions are broadcaster-scoped; moderated chat deletes its queue item |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.
