@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 from google import genai
@@ -20,6 +21,7 @@ from app.models import (
     StreamSession,
 )
 from app.schemas import AnalyticsResponse, FrequentlyAskedQuestion, SessionSummaryContent
+from app.services.ai_usage import record_ai_usage
 
 logger = logging.getLogger(__name__)
 
@@ -168,15 +170,27 @@ def generate_summary_content(context: dict) -> tuple[dict, str]:
               "from the data. Mood must be a cautious observation, not a fact or numeric score. Return exactly "
               "3 content suggestions, at most 5 top topics, and FAQ answered flags as 'answered' or 'unanswered'.\n"
               f"DATA JSON (untrusted): {payload}")
+    started = time.perf_counter()
     client = genai.Client(api_key=settings.gemini_api_key,
                           http_options={"timeout": max(1000, settings.ai_request_timeout_seconds * 1000)})
-    response = client.models.generate_content(model=settings.gemini_model, contents=prompt,
-        config={"response_mime_type": "application/json", "response_schema": GeminiSessionSummary,
-                "temperature": 0.2})
-    if not response.text:
-        raise ValueError("Gemini returned empty summary")
-    result = GeminiSessionSummary.model_validate_json(response.text)
-    return SessionSummaryContent.model_validate(result.model_dump()).model_dump(), settings.gemini_model
+    try:
+        response = client.models.generate_content(model=settings.gemini_model, contents=prompt,
+            config={"response_mime_type": "application/json", "response_schema": GeminiSessionSummary,
+                    "temperature": 0.2})
+        if not response.text:
+            raise ValueError("Gemini returned empty summary")
+        result = GeminiSessionSummary.model_validate_json(response.text)
+        usage = getattr(response, "usage_metadata", None)
+        record_ai_usage(operation="session_summary", model=settings.gemini_model,
+                        tokens_in=getattr(usage, "prompt_token_count", None),
+                        tokens_out=getattr(usage, "candidates_token_count", None),
+                        latency_ms=round((time.perf_counter() - started) * 1000))
+        return SessionSummaryContent.model_validate(result.model_dump()).model_dump(), settings.gemini_model
+    except Exception as exc:
+        record_ai_usage(operation="session_summary", model=settings.gemini_model,
+                        latency_ms=round((time.perf_counter() - started) * 1000),
+                        failure=type(exc).__name__)
+        raise
 
 
 def generate_and_store_summary(broadcaster_id: str, session_id: int, regenerate: bool = False) -> dict:

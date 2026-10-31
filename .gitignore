@@ -7,6 +7,10 @@
 *.pem
 *.key
 secrets/
+data/live_test_viewer_tokens.json
+data/live_test_results.local.json
+docs/live_test_results.local.json
+docs/screenshots/live_test/
 __pycache__/
 *.py[cod]
 *.egg-info/

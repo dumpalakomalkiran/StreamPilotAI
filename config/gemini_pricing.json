@@ -1,0 +1,11 @@
+{
+  "comment": "Indicative USD per 1,000,000 tokens for cost estimates only. Verify against the official pricing page before every run; prices, tiers, and model availability can change.",
+  "source_url": "https://ai.google.dev/gemini-api/docs/pricing",
+  "model_rates": {
+    "gemini-3.5-flash-lite": {
+      "tier": "standard",
+      "input_usd_per_million_tokens": 0.30,
+      "output_usd_per_million_tokens": 2.50
+    }
+  }
+}

@@ -9,6 +9,7 @@ from google import genai
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import get_settings
+from app.services.ai_usage import record_ai_usage
 
 logger = logging.getLogger(__name__)
 HOLDING_REPLY = "Good question, I'll cover it after this round!"
@@ -86,6 +87,8 @@ async def generate_reply(canonical_question: str, samples: list[str], stream_fac
         logger.warning("Reply suggestion generation failed model=%s failure=%s", model, failure)
     finally:
         latency_ms = round((time.perf_counter() - started) * 1000)
+        record_ai_usage(operation="reply_suggestion", model=model, tokens_in=tokens_in,
+                        tokens_out=tokens_out, latency_ms=latency_ms, failure=failure)
         logger.info("Reply suggestion usage model=%s tokens_in=%s tokens_out=%s latency_ms=%d failure=%s",
                     model, tokens_in if tokens_in is not None else "unknown",
                     tokens_out if tokens_out is not None else "unknown", latency_ms, failure)

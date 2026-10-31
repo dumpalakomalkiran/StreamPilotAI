@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 
 import httpx
 from google import genai
@@ -10,6 +11,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.schemas import ChallengeOption, ChallengeProposal, GeminiChallengeOutput
+from app.services.ai_usage import record_ai_usage
 
 logger = logging.getLogger(__name__)
 GATEWAY_SAFE_TIMEOUT_SECONDS = 50
@@ -60,6 +62,7 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
     # Leave room for the API route/proxy to serialize and deliver the fallback
     # before common 60-second gateway deadlines expire.
     timeout_seconds = max(1, min(settings.ai_request_timeout_seconds, GATEWAY_SAFE_TIMEOUT_SECONDS))
+    started = time.perf_counter()
 
     def request() -> ChallengeProposal:
         logger.info("Gemini suggestion request started (model=%s, format=application/json)", settings.gemini_model)
@@ -79,6 +82,11 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
         if not response.text:
             raise ValueError("Gemini returned an empty response")
         proposal = GeminiChallengeOutput.model_validate_json(response.text)
+        usage = getattr(response, "usage_metadata", None)
+        record_ai_usage(operation="challenge_suggestion", model=settings.gemini_model,
+                        tokens_in=getattr(usage, "prompt_token_count", None),
+                        tokens_out=getattr(usage, "candidates_token_count", None),
+                        latency_ms=round((time.perf_counter() - started) * 1000))
         logger.info("Gemini suggestion response validated (model=%s, option_count=%d)", settings.gemini_model, len(proposal.options))
         return ChallengeProposal(**proposal.model_dump(), source="gemini")
 
@@ -87,6 +95,8 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
             asyncio.to_thread(request), timeout=timeout_seconds
         )
     except (TimeoutError, genai_errors.APIError, ValidationError, ValueError, TypeError, httpx.HTTPError, OSError) as exc:
+        record_ai_usage(operation="challenge_suggestion", model=settings.gemini_model,
+                        latency_ms=round((time.perf_counter() - started) * 1000), failure=type(exc).__name__)
         status = getattr(exc, "code", None)
         provider_status = getattr(exc, "status", None)
         safe_message = _safe_provider_message(exc, settings.gemini_api_key, snippets)

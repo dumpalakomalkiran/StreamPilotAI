@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import re
+import time
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 
@@ -26,6 +27,7 @@ from app.models import (
     StreamSession,
 )
 from app.schemas import GeminiPollSuggestion
+from app.services.ai_usage import record_ai_usage
 from app.services.dashboard_socket import interaction_payload
 from app.services.moderation import (
     ModerationClassification,
@@ -263,15 +265,28 @@ def _generate_grouping(candidates: list[dict[str, object]], groups: list[dict[st
         "UNTRUSTED_JSON_START\n" + payload + "\nUNTRUSTED_JSON_END"
     )
     timeout = max(1, min(settings.ai_request_timeout_seconds, 20))
+    started = time.perf_counter()
     client = genai.Client(api_key=settings.gemini_api_key, http_options={"timeout": timeout * 1000})
-    response = client.models.generate_content(
-        model=settings.gemini_model, contents=prompt,
-        config={"response_mime_type": "application/json", "response_schema": GroupingOutput,
-                "temperature": 0},
-    )
-    if not response.text:
-        raise ValueError("Gemini returned empty interaction grouping")
-    return GroupingOutput.model_validate_json(response.text)
+    try:
+        response = client.models.generate_content(
+            model=settings.gemini_model, contents=prompt,
+            config={"response_mime_type": "application/json", "response_schema": GroupingOutput,
+                    "temperature": 0},
+        )
+        if not response.text:
+            raise ValueError("Gemini returned empty interaction grouping")
+        result = GroupingOutput.model_validate_json(response.text)
+        usage = getattr(response, "usage_metadata", None)
+        record_ai_usage(operation="interaction_batch", model=settings.gemini_model,
+                        tokens_in=getattr(usage, "prompt_token_count", None),
+                        tokens_out=getattr(usage, "candidates_token_count", None),
+                        latency_ms=round((time.perf_counter() - started) * 1000))
+        return result
+    except Exception as exc:
+        record_ai_usage(operation="interaction_batch", model=settings.gemini_model,
+                        latency_ms=round((time.perf_counter() - started) * 1000),
+                        failure=type(exc).__name__)
+        raise
 
 
 def _poll_generation_allowed(db: Session, broadcaster_id: str, session_id: int, settings) -> bool:
