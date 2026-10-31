@@ -45,3 +45,10 @@ Date/commit; files changed; commands and exact counts; tests added; live actions
 - Frontend baseline: `npm test` failed because `vitest` was not found; `npm run typecheck` and `npm run build` failed because `tsc` was not found.
 - Frontend dependency recovery: `npm ci` stalled after reporting one deprecated package; stopped after no further output. Retried with approved escalation and observed the same stall, then stopped. Frontend gates remain unverified, not code failures.
 - No source changes or live Twitch/Gemini calls were made during this verification entry. Next: inspect git history and EventSub deletion/clear processing before the smallest regression fix.
+
+## EventSub regression review — 2026-11-01
+- Compared `8c3d08f^` with `8c3d08f`; that commit added four chat/moderation subscriptions, deletion tombstones and removal handlers. The normal `channel.chat.message` persistence and vote path remained in place.
+- Hardened notification/frame parsing in `backend/app/services/eventsub.py`: malformed objects and unknown subscription/message types are logged and skipped; malformed frames no longer escape the receive loop; deletion/clear handlers validate payload shape.
+- Updated `backend/tests/test_eventsub.py` to cover regular messages, duplicate message IDs with conflicting vote text, deletion, per-user clear, full chat clear, malformed input and unknown subscription types.
+- Verification: `python -m pytest -q -p no:cacheprovider`: **18 passed**; `ruff check app tests`: **passed**.
+- No live Twitch messages, challenge launch, or Gemini requests were made. EventSub delivery remains unverified live.

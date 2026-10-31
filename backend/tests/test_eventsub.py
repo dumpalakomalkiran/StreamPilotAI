@@ -67,8 +67,15 @@ async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch
         "message": {"text": "!vote 2"},
     }
     notification = {"event": event}
-    await eventsub._process_notification("broadcaster-1", {"message_id": "event-1"}, notification)
-    await eventsub._process_notification("broadcaster-1", {"message_id": "event-1"}, notification)
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "channel.chat.message", "message_id": "event-1"},
+        notification,
+    )
+    duplicate_notification = {"event": {**event, "message": {"text": "!vote 1"}}}
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "channel.chat.message", "message_id": "event-1"},
+        duplicate_notification,
+    )
     broadcaster_notification = {"event": {
         **event,
         "chatter_user_id": "broadcaster-1",
@@ -76,7 +83,8 @@ async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch
         "message": {"text": "Testing chat feed"},
     }}
     await eventsub._process_notification(
-        "broadcaster-1", {"message_id": "event-2"}, broadcaster_notification
+        "broadcaster-1", {"subscription_type": "channel.chat.message", "message_id": "event-2"},
+        broadcaster_notification,
     )
 
     with test_sessions() as db:
@@ -148,3 +156,18 @@ async def test_deleted_chat_messages_are_removed_and_not_restored_by_replay(monk
         assert db.scalars(select(ChatMessage)).all() == []
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_malformed_and_unknown_eventsub_notifications_are_logged_and_skipped(caplog) -> None:
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "channel.chat.message", "message_id": "bad-1"},
+        {"event": ["not", "an", "object"]},
+    )
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "channel.chat.future_event", "message_id": "future-1"},
+        {"event": {}},
+    )
+
+    assert "Malformed Twitch chat message event skipped" in caplog.text
+    assert "Unknown Twitch EventSub notification skipped" in caplog.text

@@ -72,7 +72,10 @@ def _remember_deleted_messages(db, session_id: int, message_ids: list[str]) -> N
 async def _process_chat_removal(
     broadcaster_id: str, subscription_type: str, payload: dict
 ) -> None:
-    event = payload.get("event", {})
+    if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
+        logger.warning("Malformed Twitch chat removal event skipped (type=%s)", subscription_type)
+        return
+    event = payload["event"]
     if event.get("broadcaster_user_id") != broadcaster_id:
         return
 
@@ -124,15 +127,26 @@ async def _process_chat_removal(
 
 
 async def _process_notification(broadcaster_id: str, metadata: dict, payload: dict) -> None:
-    subscription_type = metadata.get("subscription_type", "channel.chat.message")
+    if not isinstance(metadata, dict) or not isinstance(payload, dict):
+        logger.warning("Malformed Twitch EventSub notification skipped")
+        return
+    subscription_type = metadata.get("subscription_type")
+    if subscription_type not in CHAT_SUBSCRIPTION_TYPES:
+        logger.warning("Unknown Twitch EventSub notification skipped (type=%s)", subscription_type)
+        return
     if subscription_type != "channel.chat.message":
         await _process_chat_removal(broadcaster_id, subscription_type, payload)
         return
 
-    event = payload.get("event", {})
-    message = event.get("message", {}).get("text", "")
-    if not isinstance(message, str):
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        logger.warning("Malformed Twitch chat message event skipped")
         return
+    message_data = event.get("message")
+    if not isinstance(message_data, dict) or not isinstance(message_data.get("text"), str):
+        logger.warning("Malformed Twitch chat message body skipped")
+        return
+    message = message_data["text"]
     if event.get("broadcaster_user_id") != broadcaster_id:
         return
     chatter_id = str(event.get("chatter_user_id", ""))
@@ -140,6 +154,9 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
         return
 
     event_id = metadata.get("message_id")
+    if not isinstance(event_id, str) or not event_id:
+        logger.warning("Twitch chat message without an event ID skipped")
+        return
     db = SessionLocal()
     try:
         session = db.scalar(select(StreamSession).where(
@@ -233,10 +250,18 @@ async def run_eventsub(broadcaster_id: str) -> None:
                         raw = await asyncio.wait_for(socket.recv(), timeout=1)
                     except TimeoutError:
                         continue
-                    message = json.loads(raw)
-                    metadata = message.get("metadata", {})
-                    message_type = metadata.get("message_type")
-                    payload = message.get("payload", {})
+                    try:
+                        message = json.loads(raw)
+                        if not isinstance(message, dict):
+                            raise TypeError("EventSub frame must be a JSON object")
+                        metadata = message.get("metadata")
+                        payload = message.get("payload")
+                        if not isinstance(metadata, dict) or not isinstance(payload, dict):
+                            raise TypeError("EventSub metadata and payload must be objects")
+                        message_type = metadata.get("message_type")
+                    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                        logger.warning("Malformed Twitch EventSub frame skipped (%s)", type(exc).__name__)
+                        continue
                     if message_type == "session_welcome":
                         logger.info("Twitch EventSub session welcomed")
                         if should_subscribe:
@@ -249,7 +274,13 @@ async def run_eventsub(broadcaster_id: str) -> None:
                         should_subscribe = False
                         break
                     elif message_type == "notification" and metadata.get("subscription_type") in CHAT_SUBSCRIPTION_TYPES:
-                        await _process_notification(broadcaster_id, metadata, payload)
+                        try:
+                            await _process_notification(broadcaster_id, metadata, payload)
+                        except (AttributeError, TypeError, KeyError, ValueError) as exc:
+                            logger.warning("Malformed Twitch EventSub notification skipped (%s)", type(exc).__name__)
+                    elif message_type == "notification":
+                        logger.warning("Unknown Twitch EventSub notification skipped (type=%s)",
+                                       metadata.get("subscription_type"))
                     elif message_type == "revocation":
                         revoked = SessionLocal()
                         try:
@@ -260,6 +291,8 @@ async def run_eventsub(broadcaster_id: str) -> None:
                         finally:
                             revoked.close()
                         return
+                    else:
+                        logger.warning("Unknown Twitch EventSub message skipped (type=%s)", message_type)
         except asyncio.CancelledError:
             raise
         except (OSError, TimeoutError, httpx.HTTPError, ConnectionClosed, SQLAlchemyError, ValueError, KeyError, RuntimeError) as exc:
