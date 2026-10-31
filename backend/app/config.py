@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     interaction_llm_batch_size: int = 8
     interaction_fuzzy_threshold: float = 0.78
     interaction_reopen_askers: int = 3
+    poll_suggestion_cooldown_seconds: int = 300
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
     twitch_redirect_uri: str = "http://localhost:8000/auth/twitch/callback"

@@ -3,9 +3,9 @@ import type { KeyboardEvent } from "react";
 import { Check, Clock3, Copy, MonitorUp, Radio, Send, Sparkles, X } from "lucide-react";
 import { api, websocketUrl, type AIResponseSuggestion, type InteractionGroup } from "./api";
 
-type Props = { onError?: (message: string) => void };
+type Props = { onError?: (message: string) => void; suggestionCount?: number };
 
-export default function SmartQueue({ onError }: Props) {
+export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
   const [items, setItems] = useState<InteractionGroup[]>([]);
   const [connection, setConnection] = useState("Connecting");
   const [status, setStatus] = useState("open");
@@ -100,7 +100,7 @@ export default function SmartQueue({ onError }: Props) {
   }
 
   return <section className="panel smart-queue" aria-labelledby="smart-queue-title">
-    <div className="queue-heading"><div><div className="panel-title" id="smart-queue-title"><Radio size={17}/> Smart Queue</div><p>Repeated questions grouped by viewer intent</p></div><span className={`queue-connection ${connection === "Live updates" ? "connected" : ""}`} role="status"><i/> {connection}</span></div>
+    <div className="queue-heading"><div><div className="panel-title" id="smart-queue-title"><Radio size={17}/> Smart Queue {suggestionCount > 0 && <span className="poll-count-badge" aria-label={`${suggestionCount} poll suggestions`}>{suggestionCount}</span>}</div><p>Repeated questions grouped by viewer intent</p></div><span className={`queue-connection ${connection === "Live updates" ? "connected" : ""}`} role="status"><i/> {connection}</span></div>
     <div className="queue-filters" aria-label="Queue filters">
       <label>Status<select aria-label="Filter status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All statuses</option><option value="open">Open</option><option value="snoozed">Snoozed</option><option value="answered">Answered</option><option value="dismissed">Dismissed</option></select></label>
       <label>Kind<select aria-label="Filter kind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">All kinds</option><option value="question">Question</option><option value="request">Request</option><option value="suggestion">Suggestion</option><option value="other">Other</option></select></label>

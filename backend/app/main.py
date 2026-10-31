@@ -33,9 +33,11 @@ from app.models import (
     AIResponseSuggestion,
     BroadcasterSettings,
     Challenge,
+    ChallengeOption,
     ChatMessage,
     Interaction,
     InteractionGroup,
+    PollSuggestion,
     StreamSession,
     TwitchCredential,
 )
@@ -48,6 +50,8 @@ from app.schemas import (
     InteractionDetailResponse,
     InteractionGroupResponse,
     OverlayTokenResponse,
+    PollSuggestionApproval,
+    PollSuggestionResponse,
     ResponseSuggestionResponse,
     SnoozeInteractionRequest,
     StatusResponse,
@@ -127,7 +131,7 @@ class VoteRequest(BaseModel):
         "twitch_user_id": "123456789", "option_number": 2, "event_id": "demo-event-001"
     }]}}
     twitch_user_id: str = Field(min_length=1, max_length=80, description="Viewer Twitch user ID; demo mode only.")
-    option_number: int = Field(ge=1, le=4, description="One-based option position.")
+    option_number: int = Field(ge=1, le=5, description="One-based option position.")
     event_id: str | None = Field(default=None, max_length=128, description="Optional idempotency key.")
 
 
@@ -420,6 +424,39 @@ def _scoped_response(db: Session, response_id: int, broadcaster_id: str) -> AIRe
     return suggestion
 
 
+def _scoped_poll_suggestion(db: Session, suggestion_id: int, broadcaster_id: str) -> PollSuggestion:
+    suggestion = db.scalar(select(PollSuggestion).join(
+        StreamSession, StreamSession.id == PollSuggestion.session_id
+    ).where(
+        PollSuggestion.id == suggestion_id,
+        PollSuggestion.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+    ))
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Poll suggestion not found")
+    return suggestion
+
+
+def _poll_suggestion_payload(db: Session, suggestion: PollSuggestion) -> dict[str, object]:
+    rows = db.execute(select(ChatMessage.display_name, ChatMessage.text, ChatMessage.received_at).join(
+        Interaction, Interaction.chat_message_id == ChatMessage.event_id
+    ).where(
+        Interaction.broadcaster_id == suggestion.broadcaster_id,
+        Interaction.chat_message_id.in_(suggestion.supporting_message_ids),
+        ChatMessage.session_id == suggestion.session_id,
+    ).order_by(ChatMessage.received_at)).all() if suggestion.supporting_message_ids else []
+    return {
+        "id": suggestion.id, "session_id": suggestion.session_id, "title": suggestion.title,
+        "options": suggestion.options, "duration_seconds": suggestion.duration_seconds,
+        "source_group_ids": suggestion.source_group_ids, "status": suggestion.status,
+        "created_at": suggestion.created_at,
+        "supporting_messages": [
+            {"display_name": name, "text": text, "created_at": received_at}
+            for name, text, received_at in rows
+        ],
+    }
+
+
 @app.get("/api/settings/stream-facts", response_model=StreamFactsResponse, tags=["Settings"],
          summary="Read streamer-provided reply facts", description="Returns the authenticated broadcaster's optional facts used to ground reply drafts. Never contains credentials.")
 def get_stream_facts(db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
@@ -708,6 +745,99 @@ async def send_response_suggestion(response_id: int = Path(ge=1), background: Ba
         if was_featured and session and session.overlay_token_hash:
             background.add_task(question_overlay_broadcast, session.overlay_token_hash, {"type": "question.hidden"})
     return suggestion
+
+
+@app.get(
+    "/api/polls/suggestions", response_model=list[PollSuggestionResponse], tags=["Poll suggestions"],
+    summary="List pending AI poll suggestions",
+    description="Returns current-session, broadcaster-scoped audience polls inferred from competing chat preferences. Suggestions never start until the streamer approves them.",
+)
+def list_poll_suggestions(
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
+) -> list[dict[str, object]]:
+    now = datetime.now(UTC)
+    expired = db.scalars(select(PollSuggestion).join(
+        StreamSession, StreamSession.id == PollSuggestion.session_id
+    ).where(
+        PollSuggestion.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+        PollSuggestion.status == "suggested",
+        (StreamSession.ended_at.is_not(None)) | (PollSuggestion.created_at < now - timedelta(hours=24)),
+    )).all()
+    for row in expired:
+        row.status = "expired"
+    if expired:
+        db.commit()
+    suggestions = db.scalars(select(PollSuggestion).join(
+        StreamSession, StreamSession.id == PollSuggestion.session_id
+    ).where(
+        PollSuggestion.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+        StreamSession.ended_at.is_(None),
+        PollSuggestion.status == "suggested",
+        PollSuggestion.created_at >= now - timedelta(hours=24),
+    ).order_by(PollSuggestion.created_at.desc()).limit(20)).all()
+    return [_poll_suggestion_payload(db, row) for row in suggestions]
+
+
+@app.post(
+    "/api/polls/suggestions/{suggestion_id}/approve", response_model=ChallengeResponse,
+    tags=["Poll suggestions"], summary="Approve and convert a poll suggestion",
+    description="Accepts the streamer's edited title/options/duration and creates an unapproved existing Challenge draft. The dashboard then uses the normal challenge approve and launch endpoints; AI never starts a poll.",
+    responses={404: {"description": "Suggestion not found for this broadcaster."},
+               409: {"description": "Suggestion is no longer pending or another challenge is active."}},
+)
+def approve_poll_suggestion(
+    payload: PollSuggestionApproval,
+    suggestion_id: int = Path(ge=1),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer),
+) -> dict[str, object]:
+    suggestion = _scoped_poll_suggestion(db, suggestion_id, broadcaster_id)
+    if suggestion.status != "suggested":
+        raise HTTPException(status_code=409, detail="Poll suggestion is no longer pending")
+    if db.scalar(select(Challenge.id).where(Challenge.status == "active")):
+        raise HTTPException(status_code=409, detail="Another challenge is active")
+    session = db.get(StreamSession, suggestion.session_id)
+    if session is None or session.ended_at is not None:
+        suggestion.status = "expired"
+        db.commit()
+        raise HTTPException(status_code=409, detail="Poll suggestion's stream session has ended")
+    challenge = Challenge(
+        session_id=session.id, title=payload.title.strip(), question=payload.title.strip(),
+        reason="Streamer-approved audience poll based on competing viewer preferences.",
+        duration_seconds=payload.duration_seconds, source="gemini", status="draft", approved=False,
+        options=[ChallengeOption(label=label, description="Audience poll option", position=index)
+                 for index, label in enumerate(payload.options, start=1)],
+    )
+    db.add(challenge)
+    db.flush()
+    suggestion.title = payload.title.strip()
+    suggestion.options = payload.options
+    suggestion.duration_seconds = payload.duration_seconds
+    suggestion.status = "approved"
+    db.commit()
+    db.refresh(challenge)
+    return challenge_payload(db, loaded_challenge(db, challenge.id))
+
+
+@app.post(
+    "/api/polls/suggestions/{suggestion_id}/dismiss", response_model=PollSuggestionResponse,
+    tags=["Poll suggestions"], summary="Dismiss a poll suggestion",
+    description="Marks a pending poll suggestion dismissed for the authenticated broadcaster without creating or launching a challenge.",
+    responses={404: {"description": "Suggestion not found for this broadcaster."},
+               409: {"description": "Suggestion is no longer pending."}},
+)
+def dismiss_poll_suggestion(
+    suggestion_id: int = Path(ge=1), db: Session = Depends(get_db),
+    broadcaster_id: str = Depends(require_streamer),
+) -> dict[str, object]:
+    suggestion = _scoped_poll_suggestion(db, suggestion_id, broadcaster_id)
+    if suggestion.status != "suggested":
+        raise HTTPException(status_code=409, detail="Poll suggestion is no longer pending")
+    suggestion.status = "dismissed"
+    db.commit()
+    db.refresh(suggestion)
+    return _poll_suggestion_payload(db, suggestion)
 
 
 @app.post(

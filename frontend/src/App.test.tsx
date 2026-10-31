@@ -17,6 +17,9 @@ vi.mock("./api", () => ({
     launchChallenge: vi.fn(),
     endChallenge: vi.fn(),
     listChallenges: vi.fn(() => Promise.resolve([])),
+    listPollSuggestions: vi.fn(() => Promise.resolve([])),
+    approvePollSuggestion: vi.fn(),
+    dismissPollSuggestion: vi.fn(() => Promise.resolve({})),
     listChatMessages: vi.fn(() => Promise.resolve([])),
     listInteractions: vi.fn(() => Promise.resolve([{
       id: 41, kind: "question", canonical_text: "Which GPU are you using?", summary: "GPU question",
@@ -111,5 +114,68 @@ describe("StreamPilot starter dashboard", () => {
     }));
     expect(api.approveChallenge).toHaveBeenCalledWith(7);
     expect(api.launchChallenge).toHaveBeenCalledWith(7);
+  });
+  it("edits and approves a poll through the existing challenge launch flow", async () => {
+    const poll = {
+      id: 17, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"],
+      duration_seconds: 30, source_group_ids: [2, 3], status: "suggested" as const,
+      created_at: new Date().toISOString(), supporting_messages: [
+        { display_name: "ViewerA", text: "Should we play ranked?", created_at: new Date().toISOString() },
+        { display_name: "ViewerB", text: "Let's play casual!", created_at: new Date().toISOString() },
+      ],
+    };
+    const launched = {
+      id: 71, title: "What should we play?", question: "What should we play?", reason: "poll",
+      duration_seconds: 45, source: "gemini" as const, status: "active" as const, approved: true,
+      total_votes: 0, winning_option_id: null, options: [
+        { id: 1, label: "Ranked", description: "", position: 1, votes: 0 },
+        { id: 2, label: "Casual", description: "", position: 2, votes: 0 },
+      ],
+    };
+    vi.mocked(api.listPollSuggestions).mockResolvedValue([poll]);
+    vi.mocked(api.approvePollSuggestion).mockResolvedValue({ ...launched, status: "draft", approved: false });
+    vi.mocked(api.approveChallenge).mockResolvedValue({ ...launched, status: "draft", approved: true });
+    vi.mocked(api.launchChallenge).mockResolvedValue(launched);
+    const sockets: MockSocket[] = [];
+    class MockSocket {
+      onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null; onclose: (() => void) | null = null;
+      constructor() { sockets.push(this); } close() { this.onclose?.(); }
+    }
+    vi.stubGlobal("WebSocket", MockSocket);
+    render(<App />);
+    expect(await screen.findByText("Ranked or casual?")).toBeInTheDocument();
+    expect(screen.getByText("ViewerA")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("POLL TITLE"), { target: { value: "What should we play?" } });
+    fireEvent.change(screen.getByLabelText("Poll option 2"), { target: { value: "Casual co-op" } });
+    fireEvent.change(screen.getByLabelText("Duration"), { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: /approve & start/i }));
+    await waitFor(() => expect(api.launchChallenge).toHaveBeenCalledWith(71));
+    expect(api.approvePollSuggestion).toHaveBeenCalledWith(17, {
+      title: "What should we play?", options: ["Ranked", "Casual co-op"], duration_seconds: 45,
+    });
+    expect(api.approveChallenge).toHaveBeenCalledWith(71);
+    expect(await screen.findByText("What should we play?")).toBeInTheDocument();
+    vi.unstubAllGlobals();
+  });
+  it("dismisses poll suggestions and shows the queue badge count", async () => {
+    const poll = {
+      id: 18, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"],
+      duration_seconds: 30, source_group_ids: [], status: "suggested" as const,
+      created_at: new Date().toISOString(), supporting_messages: [],
+    };
+    vi.mocked(api.listPollSuggestions).mockResolvedValue([poll]);
+    const sockets: MockSocket[] = [];
+    class MockSocket {
+      onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null; onclose: (() => void) | null = null;
+      constructor() { sockets.push(this); } close() { this.onclose?.(); }
+    }
+    vi.stubGlobal("WebSocket", MockSocket);
+    render(<App />);
+    expect(await screen.findByLabelText("1 poll suggestions")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => expect(api.dismissPollSuggestion).toHaveBeenCalledWith(18));
+    vi.unstubAllGlobals();
   });
 });

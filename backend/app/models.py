@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Float,
@@ -169,6 +170,21 @@ class AIResponseAudit(Base):
     sent_text: Mapped[str] = mapped_column(String(500))
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     twitch_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
+class PollSuggestion(Base):
+    __tablename__ = "poll_suggestions"
+    __table_args__ = (Index("ix_poll_suggestion_scope_status", "broadcaster_id", "session_id", "status"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    title: Mapped[str] = mapped_column(String(80))
+    options: Mapped[list[str]] = mapped_column(JSON)
+    duration_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    source_group_ids: Mapped[list[int]] = mapped_column(JSON)
+    supporting_message_ids: Mapped[list[str]] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), default="suggested", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class DeletedChatMessage(Base):

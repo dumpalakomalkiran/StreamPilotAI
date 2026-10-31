@@ -37,7 +37,7 @@ from app.services.twitch_auth import refresh_access_token_if_needed
 from app.services.voting import cast_vote
 
 EVENTSUB_URL = "wss://eventsub.wss.twitch.tv/ws"
-VOTE_PATTERN = re.compile(r"^\s*!vote\s+([1-4])\s*$", re.IGNORECASE)
+VOTE_PATTERN = re.compile(r"^\s*!vote\s+([1-5])\s*$", re.IGNORECASE)
 CHAT_SUBSCRIPTION_TYPES = (
     "channel.chat.message",
     "channel.chat.message_delete",

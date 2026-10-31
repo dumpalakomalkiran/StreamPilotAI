@@ -10,7 +10,14 @@ from sqlalchemy.pool import StaticPool
 
 from app.config import Settings
 from app.database import Base
-from app.models import ChatMessage, Interaction, InteractionGroup, StreamSession
+from app.models import (
+    Challenge,
+    ChatMessage,
+    Interaction,
+    InteractionGroup,
+    PollSuggestion,
+    StreamSession,
+)
 from app.services import interactions
 
 
@@ -40,6 +47,124 @@ def add_message(db, stream, event_id: str, user_id: str, text: str) -> ChatMessa
     db.add(message)
     db.flush()
     return message
+
+
+async def _run_poll_batch(session, stream, monkeypatch, *, viewers=4, blocker=None, poll_suggestions=True):
+    messages = []
+    prefix = len(session.scalars(select(ChatMessage)).all())
+    for index in range(viewers):
+        preference = "ranked competitive" if index < viewers // 2 else "casual relaxed"
+        message = add_message(session, stream, f"poll-{prefix}-{index}", f"poll-viewer-{prefix}-{index}",
+                              f"Should we play {preference} matches tonight?")
+        interaction = Interaction(
+            broadcaster_id=stream.broadcaster_id, chat_message_id=message.event_id,
+            user_login_hash=f"hashed-viewer-{prefix}-{index}", text=message.text,
+        )
+        session.add(interaction)
+        session.flush()
+        messages.append((interaction, message))
+    if blocker == "active":
+        session.add(Challenge(session_id=stream.id, title="Already active", question="Vote?",
+                              reason="test", duration_seconds=30, status="active"))
+    elif blocker == "cooldown":
+        session.add(PollSuggestion(broadcaster_id=stream.broadcaster_id, session_id=stream.id,
+                                   title="Recent poll", options=["A", "B"], duration_seconds=30,
+                                   source_group_ids=[], supporting_message_ids=[], status="dismissed"))
+    elif blocker == "pending":
+        session.add(PollSuggestion(broadcaster_id=stream.broadcaster_id, session_id=stream.id,
+                                   title="Waiting poll", options=["A", "B"], duration_seconds=30,
+                                   source_group_ids=[], supporting_message_ids=[], status="suggested"))
+    session.commit()
+    monkeypatch.setattr(interactions, "get_settings", lambda: Settings(
+        _env_file=None, gemini_api_key="mock-key", ai_request_timeout_seconds=1,
+        poll_suggestion_cooldown_seconds=300,
+    ))
+    ids = [message.event_id for _, message in messages]
+    midpoint = max(1, viewers // 2)
+    output = {
+        "decisions": [
+            {"candidate_id": interaction.id, "group_id": None,
+             "canonical_text": ("Should we queue ranked competitive matches tonight?" if index < midpoint
+                                else "Should we choose casual relaxed matches tonight?"),
+             "kind": "question"}
+            for index, (interaction, _) in enumerate(messages)
+        ],
+        "poll_suggestions": ([{
+            "title": "Ranked or casual tonight?",
+            "options": [
+                {"label": "Ranked", "supporting_message_ids": ids[:midpoint]},
+                {"label": "Casual", "supporting_message_ids": ids[midpoint:]},
+            ],
+            "duration_seconds": 30,
+        }] if poll_suggestions else []),
+    }
+
+    class FakeModels:
+        calls = 0
+
+        def generate_content(self, **_kwargs):
+            self.calls += 1
+            return SimpleNamespace(text=json.dumps(output))
+
+    fake_models = FakeModels()
+    monkeypatch.setattr(interactions.genai, "Client", lambda **_kwargs: SimpleNamespace(models=fake_models))
+    await interactions.resolve_pending(session, broadcaster_id=stream.broadcaster_id, session_id=stream.id)
+    return fake_models.calls
+
+
+@pytest.mark.asyncio
+async def test_batched_gemini_detects_competing_preferences_and_saves_poll(db, monkeypatch):
+    session, stream = db
+    calls = await _run_poll_batch(session, stream, monkeypatch)
+    poll = session.scalar(select(PollSuggestion).where(PollSuggestion.broadcaster_id == stream.broadcaster_id))
+    assert calls == 1
+    assert poll is not None
+    assert poll.title == "Ranked or casual tonight?"
+    assert poll.options == ["Ranked", "Casual"]
+    assert len(poll.source_group_ids) == 2
+    assert len(poll.supporting_message_ids) == 4
+
+
+@pytest.mark.asyncio
+async def test_agreement_and_too_few_distinct_viewers_do_not_save_polls(db, monkeypatch):
+    session, stream = db
+    await _run_poll_batch(session, stream, monkeypatch, poll_suggestions=False)
+    assert session.scalar(select(PollSuggestion)) is None
+
+    # The model's suggestion is rejected server-side when the evidence has only two viewers.
+    await _run_poll_batch(session, stream, monkeypatch, viewers=2)
+    assert session.scalar(select(PollSuggestion)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocker", ["active", "cooldown"])
+async def test_poll_safeguards_block_active_challenge_and_cooldown(db, monkeypatch, blocker):
+    session, stream = db
+    await _run_poll_batch(session, stream, monkeypatch, blocker=blocker)
+    polls = session.scalars(select(PollSuggestion).where(
+        PollSuggestion.broadcaster_id == stream.broadcaster_id,
+        PollSuggestion.status == "suggested",
+    )).all()
+    assert polls == []
+
+
+@pytest.mark.asyncio
+async def test_pending_suggestion_blocks_another_and_new_suggestion_is_broadcast(db, monkeypatch):
+    session, stream = db
+    await _run_poll_batch(session, stream, monkeypatch, blocker="pending")
+    assert len(session.scalars(select(PollSuggestion)).all()) == 1
+
+    session.query(PollSuggestion).delete()
+    session.commit()
+    events = []
+
+    async def capture_event(broadcaster_id, event):
+        events.append((broadcaster_id, event["type"]))
+
+    from app.services import dashboard_socket
+    monkeypatch.setattr(dashboard_socket, "broadcast", capture_event)
+    await _run_poll_batch(session, stream, monkeypatch, viewers=4)
+    assert (stream.broadcaster_id, "poll.suggestion.created") in events
 
 
 def test_question_detection_english_hinglish_commands_emotes_and_ignored_users() -> None:

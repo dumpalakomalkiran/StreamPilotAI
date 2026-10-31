@@ -59,6 +59,18 @@ export interface AIResponseSuggestion {
   twitch_message_id: string | null;
 }
 
+export interface PollSuggestion {
+  id: number;
+  session_id: number;
+  title: string;
+  options: string[];
+  duration_seconds: number;
+  source_group_ids: number[];
+  status: "suggested" | "approved" | "dismissed" | "expired";
+  created_at: string;
+  supporting_messages: Array<{ display_name: string; text: string; created_at: string }>;
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 export const websocketUrl = apiBase
   ? apiBase.replace(/^http/, "ws")
@@ -97,6 +109,10 @@ export const api = {
   createOverlayToken: () =>
     request<{ token: string; url: string }>("/api/overlay/token", { method: "POST" }),
   listChallenges: () => request<Challenge[]>("/api/challenges"),
+  listPollSuggestions: () => request<PollSuggestion[]>("/api/polls/suggestions"),
+  approvePollSuggestion: (id: number, payload: { title: string; options: string[]; duration_seconds: number }) =>
+    request<Challenge>(`/api/polls/suggestions/${id}/approve`, { method: "POST", body: JSON.stringify(payload) }),
+  dismissPollSuggestion: (id: number) => request<PollSuggestion>(`/api/polls/suggestions/${id}/dismiss`, { method: "POST" }),
   listChatMessages: (limit = 50) => request<ChatMessage[]>(`/api/chat/messages?limit=${limit}`),
   listInteractions: (filters: { status?: string; kind?: string; q?: string } = {}) => {
     const query = new URLSearchParams();

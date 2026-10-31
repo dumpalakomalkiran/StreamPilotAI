@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ChallengeOption(BaseModel):
@@ -26,6 +26,62 @@ class ChallengeProposal(BaseModel):
     duration_seconds: int = Field(ge=15, le=60)
     reason: str = Field(min_length=1, max_length=240)
     source: str = Field(default="demo", pattern="^(gemini|fallback|demo)$")
+
+
+class GeminiPollOption(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    label: str = Field(min_length=1, max_length=25)
+    supporting_message_ids: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("label")
+    @classmethod
+    def trim_label(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Poll option cannot be blank")
+        return value
+
+
+class GeminiPollSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=80)
+    options: list[GeminiPollOption] = Field(min_length=2, max_length=5)
+    duration_seconds: int = Field(ge=15, le=60)
+
+    @field_validator("title")
+    @classmethod
+    def trim_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Poll title cannot be blank")
+        return value
+
+
+class PollSuggestionApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid", json_schema_extra={"examples": [{
+        "title": "Ranked or casual?", "options": ["Ranked", "Casual"], "duration_seconds": 30,
+    }]})
+    title: str = Field(min_length=1, max_length=80)
+    options: list[str] = Field(min_length=2, max_length=5)
+    duration_seconds: int = Field(ge=15, le=60)
+
+    @field_validator("title")
+    @classmethod
+    def title_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Poll title cannot be blank")
+        return value
+
+    @field_validator("options")
+    @classmethod
+    def short_unique_options(cls, value: list[str]) -> list[str]:
+        options = [option.strip() for option in value]
+        if any(not option or len(option) > 25 for option in options):
+            raise ValueError("Poll options must contain 1–25 characters")
+        if len({option.casefold() for option in options}) != len(options):
+            raise ValueError("Poll options must be unique")
+        return options
 
 
 class GeminiChallengeOption(BaseModel):
@@ -130,6 +186,32 @@ class InteractionMessageResponse(BaseModel):
     display_name: str
     text: str
     created_at: datetime
+
+
+class PollSupportingMessageResponse(BaseModel):
+    display_name: str
+    text: str
+    created_at: datetime
+
+
+class PollSuggestionResponse(BaseModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{
+        "id": 17, "session_id": 5, "title": "Ranked or casual?",
+        "options": ["Ranked", "Casual"], "duration_seconds": 30,
+        "source_group_ids": [12, 13], "status": "suggested",
+        "created_at": "2026-11-01T12:00:00Z",
+        "supporting_messages": [{"display_name": "ViewerOne", "text": "Should we play ranked?",
+                                 "created_at": "2026-11-01T11:59:00Z"}],
+    }]})
+    id: int
+    session_id: int
+    title: str
+    options: list[str]
+    duration_seconds: int
+    source_group_ids: list[int]
+    status: str
+    created_at: datetime
+    supporting_messages: list[PollSupportingMessageResponse] = Field(default_factory=list)
 
 
 class InteractionGroupResponse(BaseModel):

@@ -16,7 +16,7 @@ In live mode `/api` management routes use HttpOnly `stream_pilot_session` from T
 - `POST /api/challenges/suggest`: explicit Gemini request; bounded chat context; returns Gemini or labelled fallback; never approves/launches.
 - `POST /api/challenges`: create draft. `GET /api/challenges`: history.
 - `POST /api/challenges/{id}/approve`, `/launch`, `/end`.
-- `POST /api/challenges/{id}/votes`: demo-only helper; live votes come from EventSub chat.
+- `POST /api/challenges/{id}/votes`: demo-only helper; live votes come from EventSub chat. `!vote N` accepts positions 1–5, including polls with five choices.
 - Schema bounds: title 1–80; question 1–180; 2–4 options; label 1–60; description max 140; duration 15–60; reason 1–240.
 
 ## Chat and overlay
@@ -61,6 +61,22 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/a
 curl -X PATCH -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"text":"I use an RTX 4070!"}' 'http://localhost:8000/api/responses/1'
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/responses/1/send'
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/responses/1/discard'
+```
+
+## AI poll suggestions
+The periodic batched Gemini grouping request can include zero or more audience poll drafts; no second model request is made. The backend requires at least three distinct HMAC-keyed viewers across two or more non-overlapping preferences, validates supporting message IDs against the same broadcaster/session, and uses `POLL_SUGGESTION_COOLDOWN_SECONDS` (default 300). An active challenge or pending suggestion suppresses additional polls. A suggestion never starts automatically.
+
+- `GET /api/polls/suggestions`: pending suggestions for the authenticated broadcaster's current session, with retained supporting snippets.
+- `POST /api/polls/suggestions/{id}/approve` with `{"title":"Ranked or casual?","options":["Ranked","Casual"],"duration_seconds":30}`: saves streamer edits and creates an unapproved existing Challenge draft. The dashboard then invokes the normal challenge approve and launch endpoints; the existing timer, `!vote N`, overlay, and result calculation are reused.
+- `POST /api/polls/suggestions/{id}/dismiss`: dismiss without creating a challenge.
+- `WS /ws/dashboard` emits `poll.suggestion.created` to the authenticated broadcaster. The client refreshes the REST list after this event or reconnect.
+
+Options are unique labels of 1–25 characters (2–5 choices); duration is 15–60 seconds. Suggestions expire when the session ends or after 24 hours. This feature does not call Twitch native polls.
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/polls/suggestions'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"title":"Ranked or casual?","options":["Ranked","Casual"],"duration_seconds":30}' 'http://localhost:8000/api/polls/suggestions/7/approve'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/polls/suggestions/7/dismiss'
 ```
 
 Current EventSub types and scopes must be checked against current official docs before modification. Safe provider errors must never include keys, tokens, raw diagnostics or private chat.

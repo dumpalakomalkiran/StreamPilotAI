@@ -28,3 +28,9 @@ The queue adds EventSub question/request intake, same-session fuzzy grouping, op
 
 ## AI reply drafts — implementation added
 The queue supports streamer-requested Gemini reply drafts grounded by optional broadcaster stream facts. Drafts can be edited, copied or discarded. Twitch chat is sent only by an explicit `Send to chat` action, through the shared Helix adapter; successful sends are audited and mark the queue item answered. Mocked backend coverage passes; frontend and live-provider verification remain pending as noted in `PROGRESS.md`.
+
+## AI poll suggestions — implementation added
+The same periodic batched Gemini queue-grouping call can identify competing viewer preferences and emit a validated broadcaster/session-scoped suggestion. Server-side evidence thresholds, active-challenge checks, pending-draft suppression, recent deduplication and a configurable cooldown apply. A streamer edits and approves; the API creates the existing Challenge draft and the UI continues through its normal approve/launch calls. `!vote N` supports positions 1–5; timer, overlay and results are reused. No Twitch native poll integration is used.
+
+## AI poll suggestions — implementation added
+The same periodic batched Gemini queue-grouping call can identify competing viewer preferences and emit a validated broadcaster/session-scoped suggestion. Server-side evidence thresholds, active-challenge checks, pending-draft suppression, recent deduplication and a configurable cooldown apply. A streamer edits and approves; the API creates the existing Challenge draft and the UI continues through its normal approve/launch calls. `!vote N` supports positions 1–5; timer, overlay and results are reused. No Twitch native poll integration is used.

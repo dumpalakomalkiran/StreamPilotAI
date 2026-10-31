@@ -44,6 +44,10 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T38 | Explicit reply send | Only POST `/api/responses/{id}/send` calls Helix; success audits actor/time/text/message ID and answers the queue group; failures preserve draft/open state |
 | T39 | Reply send bounds/isolation | Over-500 text rejected; other broadcaster cannot read, edit, or send a suggestion |
 | T40 | Reply UI | Suggest, edit, copy, explicit send and discard display; errors inline; no send occurs before the button action |
+| T41 | Poll disagreement detection | One mocked Gemini batch creates a poll for at least three distinct viewers across at least two competing choices; agreement and fewer than three viewers create none |
+| T42 | Poll safeguards | Cooldown, active challenge, and a pending suggestion suppress a new poll while grouping remains available |
+| T43 | Poll lifecycle and scoping | Broadcaster can list/dismiss; edited approval creates an existing challenge draft, then existing approve/launch/vote path counts option five; foreign broadcaster gets 404 |
+| T44 | Poll UI and results | UI renders supporting snippets, editable options/duration, count badge and actions; completion view uses existing challenge tallies |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.
