@@ -36,3 +36,12 @@ Run `docs/NEXT_STEP_RUNBOOK.md` Phase 1. Establish local test baseline, verify p
 
 ## Entry template
 Date/commit; files changed; commands and exact counts; tests added; live actions performed; observed vs inferred; blockers; next task.
+
+## Local verification — 2026-11-01
+- Commit reviewed: `9f351b3` (`Docs Update with new features`); worktree was clean before verification.
+- Backend dependency install: `python -m pip install -e ".[dev]"` completed successfully (all dependencies were already satisfied; editable package reinstalled).
+- Backend tests: `python -m pytest -q` failed during collection with filesystem `OSError`/`ImportError` errors while pytest cache paths were inaccessible. Re-run as `python -m pytest -q -p no:cacheprovider`: **17 passed** in 3.02s.
+- Backend lint: `ruff check app tests`: **passed** (`All checks passed!`).
+- Frontend baseline: `npm test` failed because `vitest` was not found; `npm run typecheck` and `npm run build` failed because `tsc` was not found.
+- Frontend dependency recovery: `npm ci` stalled after reporting one deprecated package; stopped after no further output. Retried with approved escalation and observed the same stall, then stopped. Frontend gates remain unverified, not code failures.
+- No source changes or live Twitch/Gemini calls were made during this verification entry. Next: inspect git history and EventSub deletion/clear processing before the smallest regression fix.
