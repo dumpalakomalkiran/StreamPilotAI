@@ -9,6 +9,21 @@ def test_health_returns_ok():
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 
+def test_live_mode_is_the_default():
+    from app.config import Settings
+
+    assert Settings(_env_file=None).demo_mode is False
+    assert Settings(_env_file=None).gemini_model == "gemini-3.5-flash-lite"
+    assert Settings(_env_file=None, gemini_model="").gemini_model == "gemini-3.5-flash-lite"
+
+def test_management_endpoints_require_authentication_in_live_mode(monkeypatch):
+    from app import main
+
+    monkeypatch.setattr(main.settings, "demo_mode", False)
+    assert client.get("/api/challenges").status_code == 401
+    assert client.post("/api/challenges/suggest", json={"chat_messages": []}).status_code == 401
+    assert client.post("/api/overlay/token").status_code == 401
+
 def test_status_does_not_expose_secrets():
     body = client.get("/api/status").json()
     assert "gemini_api_key" not in body

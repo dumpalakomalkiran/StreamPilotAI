@@ -52,3 +52,12 @@ Date/commit; files changed; commands and exact counts; tests added; live actions
 - Updated `backend/tests/test_eventsub.py` to cover regular messages, duplicate message IDs with conflicting vote text, deletion, per-user clear, full chat clear, malformed input and unknown subscription types.
 - Verification: `python -m pytest -q -p no:cacheprovider`: **18 passed**; `ruff check app tests`: **passed**.
 - No live Twitch messages, challenge launch, or Gemini requests were made. EventSub delivery remains unverified live.
+
+## Safety defaults and stream lifecycle — 2026-11-01
+- Changed `DEMO_MODE` default to false, set it explicitly false in `Dockerfile` and Compose, and documented the local `DEMO_MODE=true` override in both root and backend `.env.example` files. Added an MIT `LICENSE`.
+- Added Twitch `stream.online`/`stream.offline` EventSub subscriptions with broadcaster-only conditions and no new scopes. Stream event IDs are deduplicated; offline closes the active `StreamSession`, while a later online event creates a new one.
+- SQLite connections now enable WAL and a 5-second busy timeout. Async EventSub, timer, OAuth callback, challenge action, overlay, and token-refresh ORM work is moved to threadpool helpers. Twitch token refresh is serialized per broadcaster and refreshes the row after acquiring the lock.
+- Set `GEMINI_MODEL` default to `gemini-3.5-flash-lite`; empty values fall back to that model. Installed `google-genai` is 1.75.0, and its `GenerateContentConfig` accepts the Pydantic `response_schema` used by the adapter.
+- Added tests for safe live-mode auth, settings defaults, SQLite WAL/busy timeout, stream offline/online lifecycle and dedupe, and concurrent refresh rotation. Existing EventSub moderation/message tests remain passing.
+- Verification: `python -m pytest -q -p no:cacheprovider`: **25 passed**; `ruff check app tests`: **passed**. The exact default pytest command fails to collect in this workspace because pytest's cache directories are inaccessible; disabling its cache resolves that environment issue. Frontend tests/typecheck/build remain blocked because `npm ci` stalls and local `vitest`/`tsc` executables are absent.
+- No live Twitch or Gemini provider calls were made. Stream lifecycle subscriptions, chat delivery and Gemini model access still require controlled live verification.

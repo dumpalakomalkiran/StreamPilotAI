@@ -2,18 +2,27 @@ import asyncio
 import json
 import logging
 import re
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import Challenge, ChatMessage, DeletedChatMessage, StreamSession, TwitchCredential
+from app.models import (
+    Challenge,
+    ChatMessage,
+    DeletedChatMessage,
+    ProcessedEvent,
+    StreamSession,
+    TwitchCredential,
+)
 from app.services.overlay import broadcast
 from app.services.twitch_auth import refresh_access_token_if_needed
 from app.services.voting import cast_vote
@@ -26,6 +35,8 @@ CHAT_SUBSCRIPTION_TYPES = (
     "channel.chat.clear_user_messages",
     "channel.chat.clear",
 )
+STREAM_SUBSCRIPTION_TYPES = ("stream.online", "stream.offline")
+SUPPORTED_SUBSCRIPTION_TYPES = CHAT_SUBSCRIPTION_TYPES + STREAM_SUBSCRIPTION_TYPES
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +50,9 @@ async def _subscribe(
             headers={"Authorization": f"Bearer {token}", "Client-Id": settings.twitch_client_id,
                      "Content-Type": "application/json"},
             json={"type": subscription_type, "version": "1",
-                  "condition": {"broadcaster_user_id": broadcaster_id, "user_id": broadcaster_id},
+                  "condition": ({"broadcaster_user_id": broadcaster_id}
+                                if subscription_type in STREAM_SUBSCRIPTION_TYPES
+                                else {"broadcaster_user_id": broadcaster_id, "user_id": broadcaster_id}),
                   "transport": {"method": "websocket", "session_id": session_id}},
         )
         response.raise_for_status()
@@ -47,8 +60,41 @@ async def _subscribe(
 
 
 async def _subscribe_chat_events(session_id: str, broadcaster_id: str, token: str) -> None:
-    for subscription_type in CHAT_SUBSCRIPTION_TYPES:
+    for subscription_type in SUPPORTED_SUBSCRIPTION_TYPES:
         await _subscribe(session_id, broadcaster_id, token, subscription_type)
+
+
+def _set_stream_live(broadcaster_id: str, is_live: bool, event_id: str) -> None:
+    db = SessionLocal()
+    try:
+        inserted = db.execute(sqlite_insert(ProcessedEvent).values(event_id=event_id[:128])
+                              .on_conflict_do_nothing(index_elements=[ProcessedEvent.event_id]))
+        if inserted.rowcount != 1:
+            db.rollback()
+            return
+        session = db.scalar(select(StreamSession).where(
+            StreamSession.broadcaster_id == broadcaster_id,
+            StreamSession.ended_at.is_(None),
+        ).order_by(StreamSession.id.desc()))
+        if is_live and session is None:
+            db.add(StreamSession(broadcaster_id=broadcaster_id, mode="live"))
+        elif not is_live and session is not None:
+            session.ended_at = datetime.now(UTC)
+            logger.info("StreamPilot session ended from Twitch stream.offline (broadcaster=%s)", broadcaster_id)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _invalidate_broadcaster_session(broadcaster_id: str) -> None:
+    db = SessionLocal()
+    try:
+        current = db.get(TwitchCredential, broadcaster_id)
+        if current:
+            current.auth_session_hash = None
+            db.commit()
+    finally:
+        db.close()
 
 
 def _remember_deleted_messages(db, session_id: int, message_ids: list[str]) -> None:
@@ -69,7 +115,7 @@ def _remember_deleted_messages(db, session_id: int, message_ids: list[str]) -> N
         db.execute(delete(DeletedChatMessage).where(DeletedChatMessage.event_id.in_(expired)))
 
 
-async def _process_chat_removal(
+def _process_chat_removal(
     broadcaster_id: str, subscription_type: str, payload: dict
 ) -> None:
     if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
@@ -91,6 +137,7 @@ async def _process_chat_removal(
         if subscription_type == "channel.chat.message_delete":
             message_id = event.get("message_id")
             if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+                logger.warning("Malformed Twitch chat deletion skipped (missing or invalid message ID)")
                 return
             _remember_deleted_messages(db, session.id, [message_id])
             result = db.execute(delete(ChatMessage).where(
@@ -100,6 +147,7 @@ async def _process_chat_removal(
         elif subscription_type == "channel.chat.clear_user_messages":
             target_user_id = event.get("target_user_id")
             if not isinstance(target_user_id, str) or not target_user_id:
+                logger.warning("Malformed Twitch user-clear event skipped (missing target user ID)")
                 return
             affected_ids = db.scalars(select(ChatMessage.event_id).where(
                 ChatMessage.session_id == session.id,
@@ -126,48 +174,27 @@ async def _process_chat_removal(
         db.close()
 
 
-async def _process_notification(broadcaster_id: str, metadata: dict, payload: dict) -> None:
-    if not isinstance(metadata, dict) or not isinstance(payload, dict):
-        logger.warning("Malformed Twitch EventSub notification skipped")
-        return
-    subscription_type = metadata.get("subscription_type")
-    if subscription_type not in CHAT_SUBSCRIPTION_TYPES:
-        logger.warning("Unknown Twitch EventSub notification skipped (type=%s)", subscription_type)
-        return
-    if subscription_type != "channel.chat.message":
-        await _process_chat_removal(broadcaster_id, subscription_type, payload)
-        return
-
-    event = payload.get("event")
-    if not isinstance(event, dict):
-        logger.warning("Malformed Twitch chat message event skipped")
-        return
-    message_data = event.get("message")
-    if not isinstance(message_data, dict) or not isinstance(message_data.get("text"), str):
-        logger.warning("Malformed Twitch chat message body skipped")
-        return
-    message = message_data["text"]
-    if event.get("broadcaster_user_id") != broadcaster_id:
-        return
+def _process_chat_message(
+    broadcaster_id: str, metadata: dict, event: dict, message: str
+) -> tuple[str | None, dict[str, object] | None]:
     chatter_id = str(event.get("chatter_user_id", ""))
     if not chatter_id:
-        return
-
+        logger.warning("Twitch chat message without a chatter ID skipped")
+        return None, None
     event_id = metadata.get("message_id")
     if not isinstance(event_id, str) or not event_id:
         logger.warning("Twitch chat message without an event ID skipped")
-        return
+        return None, None
+
     db = SessionLocal()
     try:
         session = db.scalar(select(StreamSession).where(
             StreamSession.broadcaster_id == broadcaster_id,
             StreamSession.ended_at.is_(None),
         ).order_by(StreamSession.id.desc()))
-        if session and event_id and isinstance(message, str):
-            if db.get(DeletedChatMessage, str(event_id)[:128]):
-                return
+        if session and not db.get(DeletedChatMessage, event_id[:128]):
             inserted = db.execute(sqlite_insert(ChatMessage).values(
-                event_id=str(event_id)[:128], session_id=session.id,
+                event_id=event_id[:128], session_id=session.id,
                 chatter_id=chatter_id[:80],
                 display_name=str(event.get("chatter_user_name", "Viewer"))[:80],
                 text=message[:500].replace("\x00", ""),
@@ -182,31 +209,67 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
     finally:
         db.close()
 
-    # Persist broadcaster chat so the live signal panel can show streamer tests and
-    # context, but never accept broadcaster vote commands.
     if chatter_id == broadcaster_id:
-        return
-
+        return None, None
     match = VOTE_PATTERN.fullmatch(message[:40])
     if not match:
-        return
+        return None, None
     db = SessionLocal()
     try:
         active = db.scalar(select(Challenge).where(
             Challenge.status == "active"
         ).order_by(Challenge.id.desc()))
         if not active:
-            return
+            return None, None
         result = cast_vote(
             db, challenge_id=active.id, twitch_user_id=chatter_id,
-            option_number=int(match.group(1)), event_id=metadata.get("message_id"),
+            option_number=int(match.group(1)), event_id=event_id,
         )
-        if result is not None:
-            session = db.get(StreamSession, active.session_id)
-            if session and session.overlay_token_hash:
-                await broadcast(session.overlay_token_hash, {"type": "vote.updated", "challenge": result})
+        session = db.get(StreamSession, active.session_id) if result is not None else None
+        return (session.overlay_token_hash if session else None), result
     finally:
         db.close()
+
+
+async def _process_notification(broadcaster_id: str, metadata: dict, payload: dict) -> None:
+    if not isinstance(metadata, dict) or not isinstance(payload, dict):
+        logger.warning("Malformed Twitch EventSub notification skipped")
+        return
+    subscription_type = metadata.get("subscription_type")
+    if subscription_type not in SUPPORTED_SUBSCRIPTION_TYPES:
+        logger.warning("Unknown Twitch EventSub notification skipped (type=%s)", subscription_type)
+        return
+    if subscription_type in STREAM_SUBSCRIPTION_TYPES:
+        event = payload.get("event")
+        event_id = metadata.get("message_id")
+        if (not isinstance(event, dict) or event.get("broadcaster_user_id") != broadcaster_id
+                or not isinstance(event_id, str) or not event_id):
+            logger.warning("Malformed Twitch stream event skipped (type=%s)", subscription_type)
+            return
+        await asyncio.to_thread(
+            _set_stream_live, broadcaster_id, subscription_type == "stream.online", event_id
+        )
+        return
+    if subscription_type != "channel.chat.message":
+        await asyncio.to_thread(_process_chat_removal, broadcaster_id, subscription_type, payload)
+        return
+
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        logger.warning("Malformed Twitch chat message event skipped")
+        return
+    message_data = event.get("message")
+    if not isinstance(message_data, dict) or not isinstance(message_data.get("text"), str):
+        logger.warning("Malformed Twitch chat message body skipped")
+        return
+    message = message_data["text"]
+    if event.get("broadcaster_user_id") != broadcaster_id:
+        return
+    overlay_hash, result = await asyncio.to_thread(
+        _process_chat_message, broadcaster_id, metadata, event, message
+    )
+    if overlay_hash and result is not None:
+        await broadcast(overlay_hash, {"type": "vote.updated", "challenge": result})
 
 
 async def run_eventsub(broadcaster_id: str) -> None:
@@ -217,30 +280,23 @@ async def run_eventsub(broadcaster_id: str) -> None:
     delay = 1
     while True:
         db = SessionLocal()
-        credential = db.get(TwitchCredential, broadcaster_id)
+        credential = await run_in_threadpool(db.get, TwitchCredential, broadcaster_id)
         if not credential or not credential.auth_session_hash:
-            db.close()
+            await run_in_threadpool(db.close)
             return
         try:
             token = await refresh_access_token_if_needed(credential, db)
         except HTTPException as exc:
-            db.close()
+            await run_in_threadpool(db.close)
             if exc.status_code == 401:
-                revoked = SessionLocal()
-                try:
-                    current = revoked.get(TwitchCredential, broadcaster_id)
-                    if current:
-                        current.auth_session_hash = None
-                        revoked.commit()
-                finally:
-                    revoked.close()
+                await run_in_threadpool(_invalidate_broadcaster_session, broadcaster_id)
                 logger.warning("Twitch EventSub authorization expired or was revoked")
                 return
             logger.warning("Twitch EventSub token refresh failed (HTTP %d); retrying", exc.status_code)
             await asyncio.sleep(delay)
             delay = min(delay * 2, 60)
             continue
-        db.close()
+        await run_in_threadpool(db.close)
         try:
             async with connect(uri, open_timeout=15, ping_interval=30, ping_timeout=20, max_size=1_000_000) as socket:
                 delay = 1
@@ -273,7 +329,7 @@ async def run_eventsub(broadcaster_id: str) -> None:
                         uri = payload["session"]["reconnect_url"]
                         should_subscribe = False
                         break
-                    elif message_type == "notification" and metadata.get("subscription_type") in CHAT_SUBSCRIPTION_TYPES:
+                    elif message_type == "notification" and metadata.get("subscription_type") in SUPPORTED_SUBSCRIPTION_TYPES:
                         try:
                             await _process_notification(broadcaster_id, metadata, payload)
                         except (AttributeError, TypeError, KeyError, ValueError) as exc:
@@ -282,14 +338,7 @@ async def run_eventsub(broadcaster_id: str) -> None:
                         logger.warning("Unknown Twitch EventSub notification skipped (type=%s)",
                                        metadata.get("subscription_type"))
                     elif message_type == "revocation":
-                        revoked = SessionLocal()
-                        try:
-                            current = revoked.get(TwitchCredential, broadcaster_id)
-                            if current:
-                                current.auth_session_hash = None
-                                revoked.commit()
-                        finally:
-                            revoked.close()
+                        await run_in_threadpool(_invalidate_broadcaster_session, broadcaster_id)
                         return
                     else:
                         logger.warning("Unknown Twitch EventSub message skipped (type=%s)", message_type)

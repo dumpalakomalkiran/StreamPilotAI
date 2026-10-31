@@ -10,6 +10,7 @@ In live mode `/api` management routes use HttpOnly `stream_pilot_session` from T
 - `GET /api/status`: safe configuration/worker flags; `integrations_verified` remains false in reviewed code.
 - `GET /auth/twitch`: state cookie and Twitch redirect.
 - `GET /auth/twitch/callback`: state validation, code exchange, broadcaster identity, encrypted token storage and app cookie.
+- EventSub `stream.online` starts a persisted live session and `stream.offline` sets its `ended_at`; both use Twitch's broadcaster-only condition and add no OAuth scopes.
 
 ## Challenge routes
 - `POST /api/challenges/suggest`: explicit Gemini request; bounded chat context; returns Gemini or labelled fallback; never approves/launches.

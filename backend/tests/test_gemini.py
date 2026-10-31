@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from google.genai.types import GenerateContentConfig
 
 from app.config import Settings
 from app.schemas import ChallengeProposal, GeminiChallengeOutput
@@ -14,6 +15,15 @@ VALID_PROPOSAL = {
     "duration_seconds": 30,
     "options": [{"label": "Left"}, {"label": "Right"}],
 }
+
+
+def test_installed_google_genai_supports_pydantic_response_schema() -> None:
+    config = GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=GeminiChallengeOutput,
+    )
+    assert config.response_mime_type == "application/json"
+    assert config.response_schema is GeminiChallengeOutput
 
 
 @pytest.mark.asyncio

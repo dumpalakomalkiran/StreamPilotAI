@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,16 +12,21 @@ class Settings(BaseSettings):
     backend_url: str = "http://localhost:8000"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     gemini_api_key: str = ""
-    gemini_model: str = ""
+    gemini_model: str = "gemini-3.5-flash-lite"
     ai_request_timeout_seconds: int = 20
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
     twitch_redirect_uri: str = "http://localhost:8000/auth/twitch/callback"
     twitch_scopes: str = "user:read:chat user:write:chat"
     log_level: str = "INFO"
-    demo_mode: bool = True
+    demo_mode: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @field_validator("gemini_model", mode="before")
+    @classmethod
+    def use_default_model_when_empty(cls, value: str | None) -> str:
+        return value.strip() if isinstance(value, str) and value.strip() else "gemini-3.5-flash-lite"
 
     @property
     def cors_origin_list(self) -> list[str]:

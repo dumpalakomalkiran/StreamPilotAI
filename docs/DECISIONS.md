@@ -12,3 +12,8 @@
 - **ADR-010 Single process:** in-memory rate limit, worker and WebSocket registry are process-local; no horizontal replicas without shared coordination/leader ownership.
 - **ADR-011 Twitch scopes:** no speculative scope changes; verify exact current scope/token/identity requirements and record evidence.
 - **ADR-012 Next phase:** verify existing integrations and failure coverage before new features.
+
+## 2026-11-01 — Stream lifecycle and database behavior
+- Use Twitch `stream.online`/`stream.offline` EventSub subscriptions to open and close the broadcaster's live session. Twitch documents these subscriptions as requiring no user scopes; preserve existing chat scopes unchanged.
+- SQLite uses WAL with a 5-second busy timeout. Synchronous ORM work in async EventSub, challenge-clock, OAuth callback, challenge action and overlay paths is dispatched through the threadpool.
+- Keep Gemini structured output on the installed SDK's `response_schema` Pydantic integration (confirmed with google-genai 1.75.0); set `gemini-3.5-flash-lite` as the documented default while allowing `GEMINI_MODEL` override.

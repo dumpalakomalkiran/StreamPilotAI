@@ -1,9 +1,11 @@
+import asyncio
 import base64
 import hashlib
 import secrets
 import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlencode
+from weakref import WeakKeyDictionary
 
 import httpx
 from cryptography.fernet import Fernet, InvalidToken
@@ -14,6 +16,7 @@ from app.config import get_settings
 from app.models import TwitchCredential
 
 _pending_states: dict[str, float] = {}
+_refresh_locks: WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]] = WeakKeyDictionary()
 
 
 def _cipher() -> Fernet:
@@ -92,50 +95,66 @@ async def exchange_callback(code: str, state: str, cookie_state: str | None, db:
     if not required_scopes.issubset(set(token.get("scope", []))):
         raise HTTPException(status_code=403, detail="Twitch did not grant the required chat permissions")
     expires_at = datetime.now(UTC) + timedelta(seconds=max(0, int(token.get("expires_in", 0))))
-    credential = db.get(TwitchCredential, broadcaster_id)
-    if credential is None:
-        credential = TwitchCredential(broadcaster_id=broadcaster_id)
-        db.add(credential)
-    credential.access_token = encrypt_token(access_token)
-    credential.refresh_token = encrypt_token(str(token.get("refresh_token", "")))
-    credential.scopes = " ".join(token.get("scope", []))
-    credential.expires_at = expires_at
-    db.commit()
+    def store_credential() -> None:
+        credential = db.get(TwitchCredential, broadcaster_id)
+        if credential is None:
+            credential = TwitchCredential(broadcaster_id=broadcaster_id)
+            db.add(credential)
+        credential.access_token = encrypt_token(access_token)
+        credential.refresh_token = encrypt_token(str(token.get("refresh_token", "")))
+        credential.scopes = " ".join(token.get("scope", []))
+        credential.expires_at = expires_at
+        db.commit()
+
+    await asyncio.to_thread(store_credential)
     return {"broadcaster_id": broadcaster_id, "login": str(user.get("login", ""))}
 
 
 async def refresh_access_token_if_needed(credential: TwitchCredential, db: Session) -> str:
     settings = get_settings()
-    expires_at = credential.expires_at
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=UTC)
-    if expires_at > datetime.now(UTC) + timedelta(seconds=90):
-        return decrypt_token(credential.access_token)
-    refresh_token = decrypt_token(credential.refresh_token)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
-        try:
-            response = await client.post("https://id.twitch.tv/oauth2/token", data={
-                "client_id": settings.twitch_client_id,
-                "client_secret": settings.twitch_client_secret,
-                "grant_type": "refresh_token",
-                "refresh_token": refresh_token,
-            })
-            response.raise_for_status()
-            data = response.json()
-            credential.access_token = encrypt_token(data["access_token"])
-            credential.refresh_token = encrypt_token(data.get("refresh_token", refresh_token))
-            credential.expires_at = datetime.now(UTC) + timedelta(seconds=int(data["expires_in"]))
-            db.commit()
-            return str(data["access_token"])
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in (400, 401, 403):
+    loop = asyncio.get_running_loop()
+    lock = _refresh_locks.setdefault(loop, {}).setdefault(credential.broadcaster_id, asyncio.Lock())
+    async with lock:
+        # Another task may have refreshed this row while we were waiting.
+        await asyncio.to_thread(db.refresh, credential)
+        expires_at = credential.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at > datetime.now(UTC) + timedelta(seconds=90):
+            return decrypt_token(credential.access_token)
+        refresh_token = decrypt_token(credential.refresh_token)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10, connect=5)) as client:
+            try:
+                response = await client.post("https://id.twitch.tv/oauth2/token", data={
+                    "client_id": settings.twitch_client_id,
+                    "client_secret": settings.twitch_client_secret,
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                })
+                response.raise_for_status()
+                data = response.json()
+                access_token = str(data["access_token"])
+
+                def store_rotated_tokens() -> None:
+                    credential.access_token = encrypt_token(access_token)
+                    credential.refresh_token = encrypt_token(data.get("refresh_token", refresh_token))
+                    credential.expires_at = datetime.now(UTC) + timedelta(seconds=int(data["expires_in"]))
+                    db.commit()
+
+                await asyncio.to_thread(store_rotated_tokens)
+                return access_token
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in (400, 401, 403):
+                    raise HTTPException(status_code=502, detail="Twitch is temporarily unavailable") from exc
+                await asyncio.to_thread(_clear_auth_session, credential, db)
+                raise HTTPException(status_code=401, detail="Twitch authorization expired; reconnect required") from exc
+            except httpx.HTTPError as exc:
                 raise HTTPException(status_code=502, detail="Twitch is temporarily unavailable") from exc
-            credential.auth_session_hash = None
-            db.commit()
-            raise HTTPException(status_code=401, detail="Twitch authorization expired; reconnect required") from exc
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=502, detail="Twitch is temporarily unavailable") from exc
-        except (KeyError, ValueError) as exc:
-            credential.auth_session_hash = None
-            db.commit()
-            raise HTTPException(status_code=401, detail="Twitch authorization expired; reconnect required") from exc
+            except (KeyError, ValueError) as exc:
+                await asyncio.to_thread(_clear_auth_session, credential, db)
+                raise HTTPException(status_code=401, detail="Twitch authorization expired; reconnect required") from exc
+
+
+def _clear_auth_session(credential: TwitchCredential, db: Session) -> None:
+    credential.auth_session_hash = None
+    db.commit()

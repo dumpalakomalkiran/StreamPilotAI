@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.database import Base, engine, get_db, upgrade_schema
@@ -142,7 +143,7 @@ async def health() -> HealthResponse:
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini.",
     }}}}},
 )
-async def status(db: Session = Depends(get_db)) -> dict[str, object]:
+def status(db: Session = Depends(get_db)) -> dict[str, object]:
     eventsub_task = getattr(app.state, "eventsub_task", None)
     eventsub_worker = "not_started" if eventsub_task is None else (
         "running" if not eventsub_task.done() else "stopped"
@@ -167,20 +168,25 @@ async def status(db: Session = Depends(get_db)) -> dict[str, object]:
     }
 
 
+def _authorized_broadcaster() -> str | None:
+    db = next(get_db())
+    try:
+        return db.scalar(select(TwitchCredential.broadcaster_id).where(
+            TwitchCredential.auth_session_hash.is_not(None),
+            TwitchCredential.auth_session_expires_at > datetime.now(UTC),
+        ).limit(1))
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     app.state.challenge_clock_task = asyncio.create_task(run_challenge_clock())
     if not settings.demo_mode:
-        db = next(get_db())
-        try:
-            credential = db.scalar(select(TwitchCredential).where(
-                TwitchCredential.auth_session_hash.is_not(None),
-                TwitchCredential.auth_session_expires_at > datetime.now(UTC),
-            ).limit(1))
-            if credential:
-                app.state.eventsub_task = asyncio.create_task(run_eventsub(credential.broadcaster_id))
-        finally:
-            db.close()
+        broadcaster_id = await run_in_threadpool(_authorized_broadcaster)
+        if broadcaster_id:
+            app.state.eventsub_broadcaster_id = broadcaster_id
+            app.state.eventsub_task = asyncio.create_task(run_eventsub(broadcaster_id))
     try:
         yield
     finally:
@@ -265,26 +271,30 @@ async def twitch_callback(
     cookie_state = request.cookies.get("twitch_oauth_state")
     user = await exchange_callback(code, state, cookie_state, db)
     session_token = secrets.token_urlsafe(32)
-    credential = db.get(TwitchCredential, user["broadcaster_id"])
-    credential.auth_session_hash = _hash_token(session_token)
-    credential.auth_session_expires_at = datetime.now(UTC) + timedelta(days=7)
-    db.commit()
+
+    def save_auth_session_and_ensure_stream() -> None:
+        credential = db.get(TwitchCredential, user["broadcaster_id"])
+        credential.auth_session_hash = _hash_token(session_token)
+        credential.auth_session_expires_at = datetime.now(UTC) + timedelta(days=7)
+        db.commit()
+        session = db.scalar(select(StreamSession).where(
+            StreamSession.broadcaster_id == user["broadcaster_id"], StreamSession.ended_at.is_(None)
+        ).order_by(StreamSession.id.desc()))
+        if session is None:
+            db.add(StreamSession(broadcaster_id=user["broadcaster_id"], mode="live"))
+            db.commit()
+
+    await run_in_threadpool(save_auth_session_and_ensure_stream)
     redirect = RedirectResponse(settings.frontend_url.rstrip("/"), status_code=303)
     redirect.delete_cookie("twitch_oauth_state", path="/auth/twitch/callback")
     redirect.set_cookie(
         "stream_pilot_session", session_token, max_age=604800, httponly=True,
         secure=settings.app_env == "production", samesite="strict", path="/",
     )
-    session = db.scalar(select(StreamSession).where(
-        StreamSession.broadcaster_id == user["broadcaster_id"], StreamSession.ended_at.is_(None)
-    ).order_by(StreamSession.id.desc()))
-    if session is None:
-        session = StreamSession(broadcaster_id=user["broadcaster_id"], mode="live")
-        db.add(session)
-        db.commit()
     task = getattr(app.state, "eventsub_task", None)
     if task is None or task.done():
         app.state.eventsub_task = asyncio.create_task(run_eventsub(user["broadcaster_id"]))
+        app.state.eventsub_broadcaster_id = user["broadcaster_id"]
     return redirect
 
 
@@ -369,32 +379,36 @@ async def launch_challenge(
     challenge_id: int = Path(ge=1, description="Approved draft challenge ID."),
     db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
-    challenge = loaded_challenge(db, challenge_id)
-    if not challenge:
-        raise HTTPException(status_code=404, detail="Challenge not found")
-    owner = db.get(StreamSession, challenge.session_id)
-    if broadcaster_id != "demo" and (owner is None or owner.broadcaster_id != broadcaster_id):
-        raise HTTPException(status_code=404, detail="Challenge not found")
-    if not challenge.approved:
-        raise HTTPException(status_code=409, detail="Challenge approval is required")
-    if challenge.status != "draft":
-        raise HTTPException(status_code=409, detail="Challenge is not a draft")
-    if db.scalar(select(Challenge.id).where(Challenge.status == "active")):
-        raise HTTPException(status_code=409, detail="Another challenge is active")
-    now = datetime.now(UTC)
-    challenge.status = "active"
-    challenge.started_at = now
-    challenge.ends_at = now + timedelta(seconds=challenge.duration_seconds)
-    try:
-        db.commit()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="Another challenge is active") from exc
-    active = loaded_challenge(db, challenge_id)
-    session = db.get(StreamSession, active.session_id)
-    if session and session.overlay_token_hash:
-        await overlay_broadcast(session.overlay_token_hash, {"type": "challenge.started", "challenge": challenge_payload(db, active)})
-    return challenge_payload(db, active)
+    def launch_in_db():
+        challenge = loaded_challenge(db, challenge_id)
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+        owner = db.get(StreamSession, challenge.session_id)
+        if broadcaster_id != "demo" and (owner is None or owner.broadcaster_id != broadcaster_id):
+            raise HTTPException(status_code=404, detail="Challenge not found")
+        if not challenge.approved:
+            raise HTTPException(status_code=409, detail="Challenge approval is required")
+        if challenge.status != "draft":
+            raise HTTPException(status_code=409, detail="Challenge is not a draft")
+        if db.scalar(select(Challenge.id).where(Challenge.status == "active")):
+            raise HTTPException(status_code=409, detail="Another challenge is active")
+        now = datetime.now(UTC)
+        challenge.status = "active"
+        challenge.started_at = now
+        challenge.ends_at = now + timedelta(seconds=challenge.duration_seconds)
+        try:
+            db.commit()
+        except IntegrityError as exc:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="Another challenge is active") from exc
+        active = loaded_challenge(db, challenge_id)
+        session = db.get(StreamSession, active.session_id)
+        return challenge_payload(db, active), session.overlay_token_hash if session else None
+
+    payload, overlay_hash = await run_in_threadpool(launch_in_db)
+    if overlay_hash:
+        await overlay_broadcast(overlay_hash, {"type": "challenge.started", "challenge": payload})
+    return payload
 
 
 @app.post(
@@ -406,21 +420,28 @@ async def end_challenge(
     challenge_id: int = Path(ge=1, description="Challenge ID to close."),
     db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, object]:
-    challenge = loaded_challenge(db, challenge_id)
-    if not challenge:
-        raise HTTPException(status_code=404, detail="Challenge not found")
-    session = db.get(StreamSession, challenge.session_id)
-    if broadcaster_id != "demo" and (session is None or session.broadcaster_id != broadcaster_id):
-        raise HTTPException(status_code=404, detail="Challenge not found")
-    did_close = close_challenge(db, challenge)
-    ended = loaded_challenge(db, challenge_id)
-    if session and session.overlay_token_hash:
-        await overlay_broadcast(session.overlay_token_hash, {"type": "challenge.completed", "challenge": challenge_payload(db, ended)})
-    if did_close and session and session.mode == "live":
-        credential = db.get(TwitchCredential, session.broadcaster_id)
-        if credential:
-            await send_chat_message(credential, challenge_result_message(ended), db=db)
-    return challenge_payload(db, ended)
+    def end_in_db():
+        challenge = loaded_challenge(db, challenge_id)
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+        session = db.get(StreamSession, challenge.session_id)
+        if broadcaster_id != "demo" and (session is None or session.broadcaster_id != broadcaster_id):
+            raise HTTPException(status_code=404, detail="Challenge not found")
+        did_close = close_challenge(db, challenge)
+        ended = loaded_challenge(db, challenge_id)
+        return (
+            challenge_payload(db, ended),
+            session.overlay_token_hash if session else None,
+            session.broadcaster_id if did_close and session and session.mode == "live" else None,
+            challenge_result_message(ended) if did_close and session and session.mode == "live" else None,
+        )
+
+    payload, overlay_hash, live_broadcaster_id, announcement = await run_in_threadpool(end_in_db)
+    if overlay_hash:
+        await overlay_broadcast(overlay_hash, {"type": "challenge.completed", "challenge": payload})
+    if live_broadcaster_id and announcement:
+        await send_chat_message(TwitchCredential(broadcaster_id=live_broadcaster_id), announcement)
+    return payload
 
 
 @app.post(
@@ -435,14 +456,18 @@ async def vote(
 ) -> dict[str, object]:
     if not settings.demo_mode:
         raise HTTPException(status_code=403, detail="Live votes are accepted through Twitch EventSub")
-    result = cast_vote(db, challenge_id=challenge_id, twitch_user_id=payload.twitch_user_id,
-                       option_number=payload.option_number, event_id=payload.event_id)
-    if result is None:
-        raise HTTPException(status_code=409, detail="Vote was not accepted")
-    challenge = loaded_challenge(db, challenge_id)
-    session = db.get(StreamSession, challenge.session_id) if challenge else None
-    if session and session.overlay_token_hash:
-        await overlay_broadcast(session.overlay_token_hash, {"type": "vote.updated", "challenge": result})
+    def vote_in_db():
+        result = cast_vote(db, challenge_id=challenge_id, twitch_user_id=payload.twitch_user_id,
+                           option_number=payload.option_number, event_id=payload.event_id)
+        if result is None:
+            raise HTTPException(status_code=409, detail="Vote was not accepted")
+        challenge = loaded_challenge(db, challenge_id)
+        session = db.get(StreamSession, challenge.session_id) if challenge else None
+        return result, session.overlay_token_hash if session else None
+
+    result, overlay_hash = await run_in_threadpool(vote_in_db)
+    if overlay_hash:
+        await overlay_broadcast(overlay_hash, {"type": "vote.updated", "challenge": result})
     return result
 
 
@@ -455,15 +480,20 @@ async def vote(
 async def create_overlay_token(
     db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)
 ) -> dict[str, str]:
-    session = db.scalar(select(StreamSession).where(
-        StreamSession.broadcaster_id == broadcaster_id, StreamSession.ended_at.is_(None)
-    ).order_by(StreamSession.id.desc()))
-    if session is None:
-        raise HTTPException(status_code=409, detail="Start a session before setting up the overlay")
-    prior_hash = session.overlay_token_hash
     token = secrets.token_urlsafe(32)
-    session.overlay_token_hash = _hash_token(token)
-    db.commit()
+
+    def rotate_token_in_db():
+        session = db.scalar(select(StreamSession).where(
+            StreamSession.broadcaster_id == broadcaster_id, StreamSession.ended_at.is_(None)
+        ).order_by(StreamSession.id.desc()))
+        if session is None:
+            raise HTTPException(status_code=409, detail="Start a session before setting up the overlay")
+        prior_hash = session.overlay_token_hash
+        session.overlay_token_hash = _hash_token(token)
+        db.commit()
+        return prior_hash
+
+    prior_hash = await run_in_threadpool(rotate_token_in_db)
     if prior_hash:
         await overlay_revoke(prior_hash)
     return {"token": token, "url": f"{settings.frontend_url.rstrip('/')}/overlay?token={token}"}
@@ -477,26 +507,37 @@ async def overlay_websocket(websocket: WebSocket) -> None:
         await websocket.close(code=1008)
         return
     token_hash = _hash_token(token)
-    db = next(get_db())
+    def load_overlay_state():
+        db = next(get_db())
+        try:
+            session = db.scalar(select(StreamSession).where(StreamSession.overlay_token_hash == token_hash))
+            if not session:
+                return None
+            active = db.scalar(select(Challenge).options(
+                selectinload(Challenge.options), selectinload(Challenge.votes)
+            ).where(Challenge.session_id == session.id, Challenge.status.in_("active", "completed"))
+             .order_by(Challenge.id.desc()).limit(1))
+            if active:
+                event = {
+                    "type": "challenge.started" if active.status == "active" else "challenge.completed",
+                    "challenge": challenge_payload(db, active),
+                }
+            else:
+                event = {"type": "connection.status", "status": "connected", "challenge": None}
+            return event
+        finally:
+            db.close()
+
+    initial_event = await run_in_threadpool(load_overlay_state)
+    if initial_event is None:
+        await websocket.close(code=1008)
+        return
     try:
-        session = db.scalar(select(StreamSession).where(StreamSession.overlay_token_hash == token_hash))
-        if not session:
-            await websocket.close(code=1008)
-            return
         await overlay_connect(token_hash, websocket)
-        active = db.scalar(select(Challenge).options(
-            selectinload(Challenge.options), selectinload(Challenge.votes)
-        ).where(Challenge.session_id == session.id, Challenge.status.in_(["active", "completed"])).order_by(Challenge.id.desc()).limit(1))
-        if active and active.status == "active":
-            await websocket.send_json({"type": "challenge.started", "challenge": challenge_payload(db, active)})
-        elif active:
-            await websocket.send_json({"type": "challenge.completed", "challenge": challenge_payload(db, active)})
-        else:
-            await websocket.send_json({"type": "connection.status", "status": "connected", "challenge": None})
+        await websocket.send_json(initial_event)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
         overlay_disconnect(token_hash, websocket)
-        db.close()

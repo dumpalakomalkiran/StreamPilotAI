@@ -1,5 +1,6 @@
 import httpx
 from fastapi import HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -19,7 +20,7 @@ async def send_chat_message(credential: TwitchCredential, message: str, db=None)
     own_session = db is None
     db = db or SessionLocal()
     try:
-        current = db.get(TwitchCredential, credential.broadcaster_id)
+        current = await run_in_threadpool(db.get, TwitchCredential, credential.broadcaster_id)
         if current is None:
             return False
         token = await refresh_access_token_if_needed(current, db)
@@ -39,4 +40,4 @@ async def send_chat_message(credential: TwitchCredential, message: str, db=None)
         return False
     finally:
         if own_session:
-            db.close()
+            await run_in_threadpool(db.close)

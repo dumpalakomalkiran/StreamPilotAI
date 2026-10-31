@@ -31,12 +31,40 @@ async def test_eventsub_subscribes_to_chat_and_moderation_events(monkeypatch) ->
         ("session-1", "broadcaster-1", "token", "channel.chat.message_delete"),
         ("session-1", "broadcaster-1", "token", "channel.chat.clear_user_messages"),
         ("session-1", "broadcaster-1", "token", "channel.chat.clear"),
+        ("session-1", "broadcaster-1", "token", "stream.online"),
+        ("session-1", "broadcaster-1", "token", "stream.offline"),
     ]
 
 
 @pytest.mark.asyncio
+async def test_stream_subscription_uses_broadcaster_only_condition(monkeypatch) -> None:
+    captured = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, **kwargs):
+            captured.update(kwargs)
+            return FakeResponse()
+
+    monkeypatch.setattr(eventsub.httpx, "AsyncClient", lambda **_kwargs: FakeClient())
+    monkeypatch.setattr(eventsub, "get_settings", lambda: type("Settings", (), {"twitch_client_id": "client"})())
+    await eventsub._subscribe("session-1", "broadcaster-1", "token", "stream.offline")
+
+    assert captured["json"]["condition"] == {"broadcaster_user_id": "broadcaster-1"}
+
+
+@pytest.mark.asyncio
 async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch) -> None:
-    engine = create_engine("sqlite://", poolclass=StaticPool)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     test_sessions = sessionmaker(bind=engine, expire_on_commit=False)
     with test_sessions() as db:
@@ -105,8 +133,43 @@ async def test_eventsub_persists_recent_chat_and_processes_vote_once(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_stream_offline_ends_session_and_next_online_starts_another(monkeypatch) -> None:
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    test_sessions = sessionmaker(bind=engine, expire_on_commit=False)
+    with test_sessions() as db:
+        db.add(StreamSession(broadcaster_id="broadcaster-1", mode="live"))
+        db.commit()
+    monkeypatch.setattr(eventsub, "SessionLocal", test_sessions)
+
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "stream.offline", "message_id": "offline-1"},
+        {"event": {"broadcaster_user_id": "broadcaster-1"}},
+    )
+    with test_sessions() as db:
+        first_session = db.scalar(select(StreamSession))
+        assert first_session.ended_at is not None
+
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "stream.online", "message_id": "online-2"},
+        {"event": {"broadcaster_user_id": "broadcaster-1"}},
+    )
+    await eventsub._process_notification(
+        "broadcaster-1", {"subscription_type": "stream.online", "message_id": "online-2"},
+        {"event": {"broadcaster_user_id": "broadcaster-1"}},
+    )
+    with test_sessions() as db:
+        sessions = db.scalars(select(StreamSession).order_by(StreamSession.id)).all()
+        assert len(sessions) == 2
+        assert sessions[1].ended_at is None
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_deleted_chat_messages_are_removed_and_not_restored_by_replay(monkeypatch) -> None:
-    engine = create_engine("sqlite://", poolclass=StaticPool)
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
     Base.metadata.create_all(engine)
     test_sessions = sessionmaker(bind=engine, expire_on_commit=False)
     with test_sessions() as db:

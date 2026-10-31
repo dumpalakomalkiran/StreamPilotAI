@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, inspect, text
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from app.config import get_settings
@@ -10,8 +10,17 @@ class Base(DeclarativeBase):
 
 def _make_engine():
     url = get_settings().database_url
-    options = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, connect_args=options, pool_pre_ping=True)
+    is_sqlite = url.startswith("sqlite")
+    options = {"check_same_thread": False, "timeout": 5} if is_sqlite else {}
+    db_engine = create_engine(url, connect_args=options, pool_pre_ping=True)
+    if is_sqlite:
+        @event.listens_for(db_engine, "connect")
+        def configure_sqlite_connection(connection, _record):
+            cursor = connection.cursor()
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.close()
+    return db_engine
 
 
 engine = _make_engine()
