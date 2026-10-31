@@ -44,6 +44,9 @@ def upgrade_schema() -> None:
             "overlay_token_hash": "VARCHAR(64)",
             "featured_interaction_group_id": "INTEGER",
         },
+        "chat_messages": {
+            "moderation_ai_checked": "BOOLEAN NOT NULL DEFAULT 0",
+        },
         "twitch_credentials": {
             "auth_session_hash": "VARCHAR(64)",
             "auth_session_expires_at": "DATETIME",

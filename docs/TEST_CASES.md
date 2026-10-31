@@ -52,6 +52,11 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T46 | Recap generation and cache | Mock structured Gemini output is validated; default repeat returns cache; explicit regenerate may issue one new call |
 | T47 | Empty recap | Empty session receives deterministic zero-activity recap without calling Gemini |
 | T48 | Session end and recap | End closes only the authenticated broadcaster's active session, responds pending, schedules recap; foreign session is 404 |
+| T49 | Moderation deterministic flags | Four identical posts within 20 seconds, excessive caps, repeated emotes, and new-account links are flagged; returning-user links and ordinary messages are not |
+| T50 | Moderation Gemini batch | Borderline chat is classified in the existing queue/poll Gemini call; valid output can add a flag, invalid schema is ignored, and no per-message calls occur |
+| T51 | Moderation review audit | Dismiss/review transitions are tenant-scoped, reject repeat transitions, and create one AuditLog entry per status change |
+| T52 | Moderation safety boundaries | Moderation code has no Twitch action dependency; incident creation publishes only to broadcaster dashboard WebSocket and never to either overlay socket |
+| T53 | Moderation UI | Review list shows the safety banner, message context, category/severity/reason and streamer-controlled actions |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.

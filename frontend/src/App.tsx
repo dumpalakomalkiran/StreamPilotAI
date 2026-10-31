@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Activity, Bot, Check, ChevronRight, CircleHelp, Gamepad2, Gauge, LayoutDashboard, MessageCircle, MonitorPlay, Radio, Settings, ShieldCheck, Sparkles, Trophy, Users } from "lucide-react";
+import { Activity, Bot, Check, ChevronRight, CircleHelp, Gamepad2, Gauge, LayoutDashboard, MessageCircle, MonitorPlay, Radio, Settings, ShieldAlert, ShieldCheck, Sparkles, Trophy, Users } from "lucide-react";
 import { api, type AppStatus, type Challenge, type ChallengeProposal, type ChatMessage } from "./api";
 import Overlay from "./Overlay";
 import SmartQueue from "./SmartQueue";
 import PollSuggestions from "./PollSuggestions";
 import Insights from "./Insights";
+import Moderation from "./Moderation";
 import "./chat.css";
 import "./smart-queue.css";
+import "./moderation.css";
 
 export default function App() {
   return window.location.pathname === "/overlay" ? <Overlay /> : <Dashboard />;
@@ -48,6 +50,7 @@ function Dashboard() {
     { label: "Overlay Setup", icon: Radio },
     { label: "Activity", icon: Activity },
     { label: "Insights", icon: Gauge },
+    { label: "Moderation", icon: ShieldAlert },
     { label: "Settings", icon: Settings },
   ];
   const total = votes[0] + votes[1];
@@ -196,7 +199,7 @@ function Dashboard() {
         <PollSuggestions onCountChange={setPollSuggestionCount} onError={setApiError} onStarted={(challenge)=>{setChallengeId(challenge.id);setCurrentChallenge(challenge);setCurrentChallengeIsPoll(true);setVotes(challenge.options.map(option=>option.votes));setLaunched(true);}}/>
         <section className="bottom-grid"><div className="panel vote-panel"><div className="panel-heading"><div><div className="panel-title"><Trophy size={17}/> {currentChallengeIsPoll&&currentChallenge?.status==="completed"?"Audience poll results":"Audience vote"}</div><p>{currentChallenge?.status === "active" ? "Live totals from the backend" : currentChallenge?.status === "completed" ? "Final results from the existing vote records" : "Sample preview until a challenge is active"}</p></div><span className={`vote-state ${currentChallenge?.status === "active"?"state-live":""}`}><span/>{currentChallenge?.status?.toUpperCase() ?? "PREVIEW"}</span></div>{voteOptions.map((option,index)=><Vote key={option.label} label={option.label} count={option.votes ?? votes[index] ?? 0} total={currentChallenge?.total_votes ?? total} color={index===0?"purple-fill":"slate-fill"}/>) }<div className="vote-summary"><span><Users size={15}/>{currentChallenge?.total_votes ?? total} {currentChallenge ? "backend votes" : "sample votes"}</span>{currentChallenge?.status==="completed"&&currentChallengeIsPoll&&<strong>{currentChallenge.winning_option_id===null?"Tie · no winning option":`Winner: ${currentChallenge.options.find(option=>option.id===currentChallenge.winning_option_id)?.label ?? "Final result"}`}</strong>}{!currentChallenge && <button onClick={()=>setVotes(v=>[v[0]+1,v[1]])}>Simulate preview vote</button>}</div></div><div className="panel safety-panel"><div className="panel-heading"><div><div className="panel-title"><ShieldCheck size={17}/> Streamer controls</div><p>Keep your stream in control</p></div></div><Safety title="Approval required" text="AI suggestions never launch automatically."/><Safety title="Vote validation" text="Backend validates chat commands and timing."/><Safety title="Emergency stop" text="End active interactions at any time."/></div></section>
         <footer className="page-footer"><span><span className="footer-dot"/> StreamPilot AI <span>·</span> Local starter preview</span><span>Built for creators, powered by community.</span></footer>
-        </> : activeNav === "Insights" ? <Insights sessionId={summarySessionId}/> : <WorkspacePage activeNav={activeNav} status={appStatus} overlayUrl={overlayUrl} onGenerateOverlay={generateOverlayLink} />}
+        </> : activeNav === "Insights" ? <Insights sessionId={summarySessionId}/> : activeNav === "Moderation" ? <Moderation/> : <WorkspacePage activeNav={activeNav} status={appStatus} overlayUrl={overlayUrl} onGenerateOverlay={generateOverlayLink} />}
       </div>
     </main>
   </div>;

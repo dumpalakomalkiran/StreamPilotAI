@@ -14,6 +14,9 @@ vi.mock("./api", () => ({
       integrations_verified: false,
     })),
     getCurrentAnalytics: vi.fn(() => Promise.resolve({ session_id: null, total_messages: 0, unique_chatters: 0, questions_detected: 0, groups_open: 0, groups_answered: 0, groups_dismissed: 0, average_time_to_answer_seconds: null, top_open_groups: [], top_unanswered_questions: [], poll_suggestions_approved: 0, poll_suggestions_dismissed: 0, messages_per_minute: [] })),
+    listModerationIncidents: vi.fn(() => Promise.resolve([])),
+    dismissModerationIncident: vi.fn(() => Promise.resolve({ id: 71, status: "dismissed" })),
+    reviewModerationIncident: vi.fn(() => Promise.resolve({ id: 71, status: "reviewed" })),
     getLatestSessionSummary: vi.fn(() => Promise.reject(new Error("No recap"))),
     getSessionSummary: vi.fn(() => Promise.resolve({ session_id: 1, status: "pending", generated_at: null, content: null })),
     generateSessionSummary: vi.fn(),
@@ -198,5 +201,22 @@ describe("StreamPilot starter dashboard", () => {
     expect(await screen.findByText("Messages per minute")).toBeInTheDocument();
     expect(screen.getByText("What GPU?")).toBeInTheDocument();
     expect(screen.getByText("Top unanswered questions")).toBeInTheDocument();
+  });
+
+  it("shows conservative moderation flags and lets the streamer dismiss one", async () => {
+    vi.mocked(api.listModerationIncidents).mockResolvedValueOnce([{
+      id: 71, session_id: 4, message_id: "message-71", user_display_name: "NewViewer",
+      message: "visit https://example.org", category: "link", severity: "medium",
+      confidence: 0.9, reason: "Contains a link from an account with no earlier chat in this session.",
+      status: "open", created_at: new Date().toISOString(),
+    }]);
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /moderation/i }));
+    expect(await screen.findByText("Flags are suggestions. StreamPilot never bans, times out or deletes on its own.")).toBeInTheDocument();
+    expect(await screen.findByText("visit https://example.org")).toBeInTheDocument();
+    expect(screen.getByText("link", { selector: ".moderation-category" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => expect(api.dismissModerationIncident).toHaveBeenCalledWith(71));
+    expect(screen.queryByText("visit https://example.org")).not.toBeInTheDocument();
   });
 });

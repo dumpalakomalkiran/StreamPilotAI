@@ -20,6 +20,7 @@ from app.models import (
     ChatMessage,
     DeletedChatMessage,
     Interaction,
+    ModerationIncident,
     ProcessedEvent,
     StreamSession,
     TwitchCredential,
@@ -32,6 +33,7 @@ from app.services.interactions import (
     event_is_emote_only,
     ingest_message,
 )
+from app.services.moderation import detect_deterministic_incident, incident_payload
 from app.services.overlay import broadcast
 from app.services.question_overlay import broadcast as broadcast_question_overlay
 from app.services.twitch_auth import refresh_access_token_if_needed
@@ -172,6 +174,7 @@ def _process_chat_removal(
                 logger.warning("Malformed Twitch chat deletion skipped (missing or invalid message ID)")
                 return None, []
             _remember_deleted_messages(db, session.id, [message_id])
+            db.execute(delete(ModerationIncident).where(ModerationIncident.chat_message_id == message_id))
             queue_events.extend(delete_interactions_for_chat_messages(db, [message_id]))
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
@@ -187,6 +190,8 @@ def _process_chat_removal(
                 ChatMessage.chatter_id == target_user_id[:80],
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
+            if affected_ids:
+                db.execute(delete(ModerationIncident).where(ModerationIncident.chat_message_id.in_(affected_ids)))
             queue_events.extend(delete_interactions_for_chat_messages(db, affected_ids))
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
@@ -197,6 +202,8 @@ def _process_chat_removal(
                 ChatMessage.session_id == session.id
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
+            if affected_ids:
+                db.execute(delete(ModerationIncident).where(ModerationIncident.chat_message_id.in_(affected_ids)))
             queue_events.extend(delete_interactions_for_chat_messages(db, affected_ids))
             result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
         else:
@@ -214,16 +221,17 @@ def _process_chat_removal(
 
 def _process_chat_message(
     broadcaster_id: str, metadata: dict, event: dict, message: str
-) -> tuple[str | None, dict[str, object] | None]:
+) -> tuple[str | None, dict[str, object] | None, dict[str, object] | None]:
     chatter_id = str(event.get("chatter_user_id", ""))
     if not chatter_id:
         logger.warning("Twitch chat message without a chatter ID skipped")
-        return None, None
+        return None, None, None
     event_id = metadata.get("message_id")
     if not isinstance(event_id, str) or not event_id:
         logger.warning("Twitch chat message without an event ID skipped")
-        return None, None
+        return None, None, None
 
+    incident_event = None
     db = SessionLocal()
     try:
         session = db.scalar(select(StreamSession).where(
@@ -241,6 +249,15 @@ def _process_chat_message(
                 chat_row = db.get(ChatMessage, event_id[:128])
                 if chat_row:
                     message_payload = event.get("message", {})
+                    fragments = message_payload.get("fragments") if isinstance(message_payload, dict) else None
+                    if chatter_id != broadcaster_id:
+                        incident = detect_deterministic_incident(
+                            db, broadcaster_id=broadcaster_id, session=session,
+                            message=chat_row, fragments=fragments,
+                        )
+                        if incident is not None:
+                            incident_event = {"type": "moderation.incident.created",
+                                              "incident": incident_payload(incident)}
                     ingest_message(
                         db, broadcaster_id=broadcaster_id, session=session,
                         chat_message=chat_row,
@@ -248,7 +265,7 @@ def _process_chat_message(
                         or str(event.get("chatter_type", "")).casefold() == "bot"
                         or str(event.get("chatter_user_login", "")).casefold().endswith("bot"),
                         is_emote_only=event_is_emote_only(
-                            message_payload.get("fragments") if isinstance(message_payload, dict) else None
+                            fragments
                         ),
                     )
                 oldest = db.scalars(select(ChatMessage.event_id).where(
@@ -262,23 +279,23 @@ def _process_chat_message(
         db.close()
 
     if chatter_id == broadcaster_id:
-        return None, None
+        return None, None, None
     match = VOTE_PATTERN.fullmatch(message[:40])
     if not match:
-        return None, None
+        return None, None, incident_event
     db = SessionLocal()
     try:
         active = db.scalar(select(Challenge).where(
             Challenge.status == "active"
         ).order_by(Challenge.id.desc()))
         if not active:
-            return None, None
+            return None, None, incident_event
         result = cast_vote(
             db, challenge_id=active.id, twitch_user_id=chatter_id,
             option_number=int(match.group(1)), event_id=event_id,
         )
         session = db.get(StreamSession, active.session_id) if result is not None else None
-        return (session.overlay_token_hash if session else None), result
+        return (session.overlay_token_hash if session else None), result, incident_event
     finally:
         db.close()
 
@@ -327,9 +344,11 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
     message = message_data["text"]
     if event.get("broadcaster_user_id") != broadcaster_id:
         return
-    overlay_hash, result = await asyncio.to_thread(
+    overlay_hash, result, moderation_event = await asyncio.to_thread(
         _process_chat_message, broadcaster_id, metadata, event, message
     )
+    if moderation_event:
+        await broadcast_dashboard(broadcaster_id, moderation_event)
     if overlay_hash and result is not None:
         await broadcast(overlay_hash, {"type": "vote.updated", "challenge": result})
     queue_event = await asyncio.to_thread(_queue_event_for_message, broadcaster_id, metadata.get("message_id"))

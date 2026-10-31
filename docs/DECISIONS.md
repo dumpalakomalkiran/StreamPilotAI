@@ -32,4 +32,6 @@
 
 - **ADR-015 Community Intelligence:** aggregate only persisted moderation-filtered chat and queue/poll data. Cache structured summaries by broadcaster/session, call Gemini once for a missing recap and only regenerate on an explicit request. Session end is non-blocking and schedules recap generation; empty sessions use a deterministic zero-activity recap.
 
+- **ADR-016 Flag-only moderation assistant:** deterministic signals create broadcaster/session-scoped review flags; optional borderline classification is folded into the existing batched queue/poll Gemini request. The model may only add a validated flag; moderation data is dashboard-only, and status transitions are audited. No Twitch ban, timeout, or delete API is imported or invoked from this path. Add tables through metadata creation and the AI-checked marker through the existing additive SQLite schema helper.
+
 - **ADR-014 Audience polls:** infer disagreement inside the existing batched queue-grouping Gemini call; do not make a separate request per message or use Twitch native polls. Validate distinct-viewer evidence in backend code. Persist only a draft; streamer action converts it to an unapproved existing Challenge, followed by the existing approval/launch, `!vote N`, timer and result path. Add the table through metadata creation because Alembic is not configured.

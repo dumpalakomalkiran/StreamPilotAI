@@ -31,12 +31,14 @@ from app.database import Base, SessionLocal, engine, get_db, upgrade_schema
 from app.models import (
     AIResponseAudit,
     AIResponseSuggestion,
+    AuditLog,
     BroadcasterSettings,
     Challenge,
     ChallengeOption,
     ChatMessage,
     Interaction,
     InteractionGroup,
+    ModerationIncident,
     PollSuggestion,
     SessionSummary,
     StreamSession,
@@ -51,6 +53,7 @@ from app.schemas import (
     HealthResponse,
     InteractionDetailResponse,
     InteractionGroupResponse,
+    ModerationIncidentResponse,
     OverlayTokenResponse,
     PollSuggestionApproval,
     PollSuggestionResponse,
@@ -114,6 +117,7 @@ app = FastAPI(
         {"name": "Challenges", "description": "Suggest, review, launch, and end streamer-approved challenges."},
         {"name": "Chat", "description": "Recent live chat signals after Twitch moderation deletions are applied."},
         {"name": "Interactions", "description": "Prioritized, grouped viewer questions and requests."},
+        {"name": "Moderation", "description": "Conservative streamer-review flags; StreamPilot never takes moderation actions on Twitch."},
         {"name": "Overlay", "description": "Create a private browser overlay credential."},
     ],
 )
@@ -609,6 +613,85 @@ def list_interactions(
     ), reverse=True)
     groups = groups[:200]
     return [_interaction_payload(db, group) for group in groups]
+
+
+def _moderation_payload(db: Session, incident: ModerationIncident) -> dict[str, object]:
+    message = db.get(ChatMessage, incident.chat_message_id)
+    return {
+        "id": incident.id, "session_id": incident.session_id,
+        "message_id": incident.chat_message_id,
+        "user_display_name": incident.user_display_name,
+        "message": message.text if message else "[message no longer retained]",
+        "category": incident.category, "severity": incident.severity,
+        "confidence": incident.confidence, "reason": incident.reason,
+        "status": incident.status, "created_at": incident.created_at,
+    }
+
+
+@app.get("/api/moderation/incidents", response_model=list[ModerationIncidentResponse],
+         tags=["Moderation"], summary="List chat moderation flags",
+         description="Returns review suggestions for the authenticated broadcaster. Flags never cause a Twitch action.")
+def list_moderation_incidents(
+    status: str = Query(default="open", pattern="^(open|dismissed|reviewed|all)$"),
+    db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer),
+) -> list[dict[str, object]]:
+    query = select(ModerationIncident).join(
+        StreamSession, StreamSession.id == ModerationIncident.session_id
+    ).where(
+        ModerationIncident.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+    )
+    if status != "all":
+        query = query.where(ModerationIncident.status == status)
+    rows = db.scalars(query.order_by(ModerationIncident.created_at.desc()).limit(200)).all()
+    return [_moderation_payload(db, incident) for incident in rows]
+
+
+def _transition_moderation_incident(
+    db: Session, incident_id: int, broadcaster_id: str, status: str,
+) -> dict[str, object]:
+    incident = db.scalar(select(ModerationIncident).join(
+        StreamSession, StreamSession.id == ModerationIncident.session_id
+    ).where(
+        ModerationIncident.id == incident_id,
+        ModerationIncident.broadcaster_id == broadcaster_id,
+        StreamSession.broadcaster_id == broadcaster_id,
+    ))
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Moderation incident not found")
+    if incident.status != "open":
+        raise HTTPException(status_code=409, detail="Only open moderation flags can be updated")
+    old_status = incident.status
+    incident.status = status
+    db.add(AuditLog(
+        broadcaster_id=broadcaster_id, actor_broadcaster_id=broadcaster_id,
+        entity_type="moderation_incident", entity_id=incident.id,
+        action=f"moderation_incident.{status}", from_status=old_status,
+        to_status=status,
+    ))
+    db.commit()
+    db.refresh(incident)
+    return _moderation_payload(db, incident)
+
+
+@app.post("/api/moderation/incidents/{incident_id}/dismiss",
+          response_model=ModerationIncidentResponse, tags=["Moderation"],
+          summary="Dismiss a moderation flag", description="Records the broadcaster's review decision; no Twitch action is made.")
+def dismiss_moderation_incident(
+    incident_id: int = Path(ge=1), db: Session = Depends(get_db),
+    broadcaster_id: str = Depends(require_streamer),
+) -> dict[str, object]:
+    return _transition_moderation_incident(db, incident_id, broadcaster_id, "dismissed")
+
+
+@app.post("/api/moderation/incidents/{incident_id}/reviewed",
+          response_model=ModerationIncidentResponse, tags=["Moderation"],
+          summary="Mark a moderation flag reviewed", description="Records the broadcaster's review decision; no Twitch action is made.")
+def review_moderation_incident(
+    incident_id: int = Path(ge=1), db: Session = Depends(get_db),
+    broadcaster_id: str = Depends(require_streamer),
+) -> dict[str, object]:
+    return _transition_moderation_incident(db, incident_id, broadcaster_id, "reviewed")
 
 
 @app.get(

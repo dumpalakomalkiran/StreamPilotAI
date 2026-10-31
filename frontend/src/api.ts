@@ -85,6 +85,20 @@ export interface SessionSummary {
   content:null|{headline:string;top_topics:string[];frequently_asked_questions:Array<{question:string;status:string}>;unanswered_follow_ups:string[];audience_mood_observation:string;content_suggestions:string[]};
 }
 
+export interface ModerationIncident {
+  id: number;
+  session_id: number;
+  message_id: string;
+  user_display_name: string;
+  message: string;
+  category: "spam" | "repeated" | "link" | "harassment" | "other";
+  severity: "low" | "medium" | "high";
+  confidence: number;
+  reason: string;
+  status: "open" | "dismissed" | "reviewed";
+  created_at: string;
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 export const websocketUrl = apiBase
   ? apiBase.replace(/^http/, "ws")
@@ -111,6 +125,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   getStatus: () => request<AppStatus>("/api/status"),
   getCurrentAnalytics: () => request<AnalyticsSnapshot>("/api/analytics/current"),
+  listModerationIncidents: (status = "open") => request<ModerationIncident[]>(`/api/moderation/incidents?status=${status}`),
+  dismissModerationIncident: (id: number) => request<ModerationIncident>(`/api/moderation/incidents/${id}/dismiss`, { method: "POST" }),
+  reviewModerationIncident: (id: number) => request<ModerationIncident>(`/api/moderation/incidents/${id}/reviewed`, { method: "POST" }),
   endCurrentSession: () => request<SessionSummary>("/api/analytics/current/end", { method: "POST" }),
   getSessionSummary: (id:number) => request<SessionSummary>(`/api/analytics/sessions/${id}/summary`),
   getLatestSessionSummary: () => request<SessionSummary>("/api/analytics/latest-summary"),

@@ -93,3 +93,17 @@ curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/analy
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"regenerate":false}' 'http://localhost:8000/api/analytics/sessions/5/summary'
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: application/json' -d '{"regenerate":true}' 'http://localhost:8000/api/analytics/sessions/5/summary'
 ```
+
+## Flag-only moderation assistant
+All moderation endpoints are authenticated and broadcaster-scoped. Deterministic flags cover an identical message posted at least four times by one viewer within 20 seconds, messages with at least 12 letters and 80% uppercase, bursts of at least six repeated tokens or eight Twitch emote fragments, and links from accounts with no earlier chat in that session. The optional Gemini classification considers only borderline messages inside the existing periodic queue/poll batch. Invalid/failed output is ignored; these flags never call Twitch moderation APIs. New tables use additive metadata creation; the SQLite schema helper adds `chat_messages.moderation_ai_checked` to existing databases.
+
+- `GET /api/moderation/incidents?status=open` lists up to 200 flags (`open|dismissed|reviewed|all`).
+- `POST /api/moderation/incidents/{id}/dismiss` records a dismiss decision and AuditLog status transition.
+- `POST /api/moderation/incidents/{id}/reviewed` records a review decision and AuditLog status transition.
+- `/ws/dashboard` emits `moderation.incident.created` only to that broadcaster's dashboard connection. Moderation is never sent through `/ws/overlay` or `/ws/overlay/question`.
+
+```bash
+curl -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents?status=open'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents/12/dismiss'
+curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents/12/reviewed'
+```

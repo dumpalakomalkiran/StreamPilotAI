@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -180,6 +181,26 @@ class ChatMessageResponse(BaseModel):
     display_name: str
     text: str
     received_at: datetime
+
+
+class ModerationIncidentResponse(BaseModel):
+    model_config = {"json_schema_extra": {"examples": [{
+        "id": 12, "session_id": 3, "message_id": "event-example", "user_display_name": "Viewer",
+        "category": "link", "severity": "medium", "confidence": 0.9,
+        "reason": "Contains a link from an account with no earlier chat in this session.",
+        "status": "open", "created_at": "2026-11-01T10:30:00Z",
+    }]}}
+    id: int
+    session_id: int
+    message_id: str
+    user_display_name: str
+    message: str = ""
+    category: Literal["spam", "repeated", "link", "harassment", "other"]
+    severity: Literal["low", "medium", "high"]
+    confidence: float = Field(ge=0, le=1)
+    reason: str
+    status: Literal["open", "dismissed", "reviewed"]
+    created_at: datetime
 
 
 class InteractionMessageResponse(BaseModel):

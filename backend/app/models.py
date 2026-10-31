@@ -96,7 +96,40 @@ class ChatMessage(Base):
     chatter_id: Mapped[str] = mapped_column(String(80))
     display_name: Mapped[str] = mapped_column(String(80), default="Viewer")
     text: Mapped[str] = mapped_column(String(500))
+    moderation_ai_checked: Mapped[bool] = mapped_column(Boolean, default=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ModerationIncident(Base):
+    __tablename__ = "moderation_incidents"
+    __table_args__ = (
+        UniqueConstraint("chat_message_id", name="uq_moderation_incident_chat_message"),
+        Index("ix_moderation_incident_scope_status", "broadcaster_id", "session_id", "status"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("stream_sessions.id"), index=True)
+    chat_message_id: Mapped[str] = mapped_column(ForeignKey("chat_messages.event_id", ondelete="CASCADE"))
+    user_display_name: Mapped[str] = mapped_column(String(80), default="Viewer")
+    category: Mapped[str] = mapped_column(String(16), default="other")
+    severity: Mapped[str] = mapped_column(String(8), default="low")
+    confidence: Mapped[float] = mapped_column(Float, default=0.5)
+    reason: Mapped[str] = mapped_column(String(240))
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    broadcaster_id: Mapped[str] = mapped_column(String(80), index=True)
+    actor_broadcaster_id: Mapped[str] = mapped_column(String(80))
+    entity_type: Mapped[str] = mapped_column(String(40))
+    entity_id: Mapped[int] = mapped_column(Integer, index=True)
+    action: Mapped[str] = mapped_column(String(40))
+    from_status: Mapped[str] = mapped_column(String(16))
+    to_status: Mapped[str] = mapped_column(String(16))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class InteractionGroup(Base):
