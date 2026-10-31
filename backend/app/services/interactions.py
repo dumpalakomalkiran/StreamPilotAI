@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.database import SessionLocal
 from app.models import ChatMessage, Interaction, InteractionGroup, StreamSession
+from app.services.dashboard_socket import interaction_payload
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,7 @@ def _load_pending_from_store(broadcaster_id: str, session_id: int, limit: int):
 
 
 def _apply_grouping_decisions(db: Session, broadcaster_id: str, session_id: int,
-                              candidate_ids: set[int], decisions: dict[int, GroupingDecision], settings) -> int:
+                              candidate_ids: set[int], decisions: dict[int, GroupingDecision], settings) -> tuple[int, list[dict[str, object]]]:
     pending = db.scalars(select(Interaction).join(
         ChatMessage, ChatMessage.event_id == Interaction.chat_message_id
     ).join(StreamSession, StreamSession.id == ChatMessage.session_id).where(
@@ -283,21 +284,25 @@ def _apply_grouping_decisions(db: Session, broadcaster_id: str, session_id: int,
     ).order_by(Interaction.created_at)).all()
     open_groups = _all_groups(db, broadcaster_id, session_id, ("open",))
     by_id = {group.id: group for group in open_groups}
+    changed: dict[int, tuple[InteractionGroup, bool]] = {}
     for candidate in pending:
         decision = decisions.get(candidate.id)
         group = by_id.get(decision.group_id) if decision and decision.group_id else None
         if group:
             _attach(db, candidate, group)
+            changed[group.id] = (group, changed.get(group.id, (group, False))[1])
         elif decision and decision.canonical_text:
             normalized = normalize_text(decision.canonical_text)
             group = _best_match(normalized, open_groups, settings.interaction_fuzzy_threshold)
             if group:
                 _attach(db, candidate, group)
+                changed[group.id] = (group, changed.get(group.id, (group, False))[1])
             else:
                 group = _new_group(db, candidate, session_id,
                                    kind=decision.kind, canonical=decision.canonical_text)
                 by_id[group.id] = group
                 open_groups.append(group)
+                changed[group.id] = (group, True)
         else:
             # Keep queue useful if Gemini is missing, times out, or returns an incomplete schema.
             detected = detect_candidate(candidate.text)
@@ -305,17 +310,23 @@ def _apply_grouping_decisions(db: Session, broadcaster_id: str, session_id: int,
             group = _best_match(normalized, open_groups, settings.interaction_fuzzy_threshold)
             if group:
                 _attach(db, candidate, group)
+                changed[group.id] = (group, changed.get(group.id, (group, False))[1])
             else:
                 group = _new_group(db, candidate, session_id,
                                    kind=detected[0] if detected else "other", canonical=candidate.text)
                 by_id[group.id] = group
                 open_groups.append(group)
+                changed[group.id] = (group, True)
     db.commit()
-    return len(pending)
+    return len(pending), [
+        {"type": "interaction.created" if created else "interaction.updated",
+         "interaction": interaction_payload(group)}
+        for group, created in changed.values()
+    ]
 
 
 def _apply_grouping_from_store(broadcaster_id: str, session_id: int,
-                               candidate_ids: set[int], decisions: dict[int, GroupingDecision], settings) -> int:
+                               candidate_ids: set[int], decisions: dict[int, GroupingDecision], settings):
     db = SessionLocal()
     try:
         return _apply_grouping_decisions(db, broadcaster_id, session_id, candidate_ids, decisions, settings)
@@ -355,10 +366,15 @@ async def resolve_pending(db: Session | None = None, *, broadcaster_id: str, ses
 
     candidate_ids = {item["candidate_id"] for item in candidate_payload}
     if db is not None:
-        return _apply_grouping_decisions(db, broadcaster_id, session_id, candidate_ids, decisions, settings)
-    return await asyncio.to_thread(
+        count, events = _apply_grouping_decisions(db, broadcaster_id, session_id, candidate_ids, decisions, settings)
+    else:
+        count, events = await asyncio.to_thread(
         _apply_grouping_from_store, broadcaster_id, session_id, candidate_ids, decisions, settings
-    )
+        )
+    from app.services.dashboard_socket import broadcast as broadcast_dashboard
+    for event in events:
+        await broadcast_dashboard(broadcaster_id, event)
+    return count
 
 
 async def run_grouping_worker() -> None:
@@ -367,7 +383,10 @@ async def run_grouping_worker() -> None:
     while True:
         await asyncio.sleep(1)
         try:
-            rows = await asyncio.to_thread(_scan_grouping_work)
+            rows, lifecycle_events = await asyncio.to_thread(_scan_grouping_work)
+            from app.services.dashboard_socket import broadcast as broadcast_dashboard
+            for broadcaster_id, event in lifecycle_events:
+                await broadcast_dashboard(broadcaster_id, event)
             now = asyncio.get_running_loop().time()
             settings = get_settings()
             for broadcaster_id, session_id, pending_count in rows:
@@ -382,24 +401,30 @@ async def run_grouping_worker() -> None:
             logger.warning("Interaction grouping worker iteration failed (error_type=%s)", type(exc).__name__)
 
 
-def _scan_grouping_work() -> list[tuple[str, int, int]]:
+def _scan_grouping_work() -> tuple[list[tuple[str, int, int]], list[tuple[str, dict[str, object]]]]:
     db = SessionLocal()
     try:
-        snoozed_broadcasters = db.scalars(select(InteractionGroup.broadcaster_id).where(
+        expired = db.scalars(select(InteractionGroup).where(
             InteractionGroup.status == "snoozed",
             InteractionGroup.snoozed_until <= datetime.now(UTC),
-        ).distinct()).all()
+        )).all()
+        snoozed_broadcasters = {group.broadcaster_id for group in expired}
         for broadcaster_id in snoozed_broadcasters:
             refresh_snoozed_groups(db, broadcaster_id)
         if snoozed_broadcasters:
             db.commit()
-        return db.execute(select(
+        rows = db.execute(select(
             Interaction.broadcaster_id, ChatMessage.session_id, func.count(Interaction.id),
         ).join(ChatMessage, Interaction.chat_message_id == ChatMessage.event_id
         ).join(StreamSession, StreamSession.id == ChatMessage.session_id).where(
             Interaction.group_id.is_(None),
             Interaction.broadcaster_id == StreamSession.broadcaster_id,
         ).group_by(Interaction.broadcaster_id, ChatMessage.session_id)).all()
+        lifecycle_events = [
+            (group.broadcaster_id, {"type": "interaction.updated", "interaction": interaction_payload(group)})
+            for group in expired
+        ]
+        return rows, lifecycle_events
     finally:
         db.close()
 
@@ -415,17 +440,29 @@ def refresh_snoozed_groups(db: Session, broadcaster_id: str) -> None:
         group.snoozed_until = None
 
 
-def delete_interactions_for_chat_messages(db: Session, event_ids: list[str]) -> None:
+def delete_interactions_for_chat_messages(db: Session, event_ids: list[str]) -> list[dict[str, object]]:
     if not event_ids:
-        return
+        return []
     group_ids = set(db.scalars(select(Interaction.group_id).where(
         Interaction.chat_message_id.in_(event_ids), Interaction.group_id.is_not(None)
     )).all())
     db.query(Interaction).filter(Interaction.chat_message_id.in_(event_ids)).delete(synchronize_session=False)
+    events: list[dict[str, object]] = []
     for group_id in group_ids:
         group = db.get(InteractionGroup, group_id)
         if group:
             _refresh_counts(db, group)
             if group.message_count == 0:
                 db.delete(group)
+                events.append({"type": "interaction.updated", "interaction": {"id": group_id, "deleted": True}})
+            else:
+                remaining = db.scalars(select(Interaction).where(
+                    Interaction.group_id == group_id
+                ).order_by(Interaction.created_at.desc()).limit(1)).first()
+                if remaining:
+                    group.canonical_text = remaining.text[:500]
+                    group.normalized_text = normalize_text(remaining.text)[:500]
+                    group.summary = group.canonical_text
+                events.append({"type": "interaction.updated", "interaction": interaction_payload(group)})
+    return events
 

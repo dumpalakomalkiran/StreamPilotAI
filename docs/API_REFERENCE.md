@@ -32,6 +32,9 @@ All queue routes use the same authenticated broadcaster session as challenge man
 - `POST /api/interactions/{id}/answer`: mark an open group answered.
 - `POST /api/interactions/{id}/dismiss`: dismiss an open group.
 - `POST /api/interactions/{id}/snooze` with `{"minutes":15}`: snooze for 1–1440 minutes. Expired snoozes reopen automatically.
+- `POST /api/interactions/{id}/feature`: feature an open queue item's canonical text and viewer count on the OBS overlay. No member identities or raw messages are sent.
+- `WS /ws/dashboard`: browser session cookie authentication and allowed-origin validation; events are restricted to the authenticated broadcaster: `interaction.created`, `interaction.updated`, `session.started`, `session.ended`. Reconnect by re-fetching `GET /api/interactions`; there is no event replay.
+- The existing `WS /ws/overlay` endpoint and its challenge event contract are unchanged. Optional question display uses a separate `WS /ws/overlay/question` connection with the same token/subprotocol; reconnect sends the current `question.featured` or `question.hidden` state.
 
 Example requests (replace the cookie placeholder with the browser's authenticated session; do not commit or share it):
 

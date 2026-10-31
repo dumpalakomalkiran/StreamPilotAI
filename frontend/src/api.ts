@@ -30,6 +30,24 @@ export interface ChatMessage {
   received_at: string;
 }
 
+export type InteractionStatus = "open" | "answered" | "snoozed" | "dismissed";
+export type InteractionKind = "question" | "request" | "suggestion" | "other";
+export interface InteractionGroup {
+  id: number;
+  kind: InteractionKind;
+  canonical_text: string;
+  summary: string;
+  status: InteractionStatus;
+  snoozed_until: string | null;
+  priority_score: number;
+  priority_components: { askers: number; recency: number; repetition: number };
+  asker_count: number;
+  message_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  answered_at: string | null;
+}
+
 const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? "";
 export const websocketUrl = apiBase
   ? apiBase.replace(/^http/, "ws")
@@ -69,4 +87,14 @@ export const api = {
     request<{ token: string; url: string }>("/api/overlay/token", { method: "POST" }),
   listChallenges: () => request<Challenge[]>("/api/challenges"),
   listChatMessages: (limit = 50) => request<ChatMessage[]>(`/api/chat/messages?limit=${limit}`),
+  listInteractions: (filters: { status?: string; kind?: string; q?: string } = {}) => {
+    const query = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => { if (value) query.set(key, value); });
+    const encoded = query.toString();
+    return request<InteractionGroup[]>(`/api/interactions${encoded ? `?${encoded}` : ""}`);
+  },
+  answerInteraction: (id: number) => request<InteractionGroup>(`/api/interactions/${id}/answer`, { method: "POST" }),
+  dismissInteraction: (id: number) => request<InteractionGroup>(`/api/interactions/${id}/dismiss`, { method: "POST" }),
+  snoozeInteraction: (id: number, minutes: number) => request<InteractionGroup>(`/api/interactions/${id}/snooze`, { method: "POST", body: JSON.stringify({ minutes }) }),
+  featureInteraction: (id: number) => request<{ status: string; interaction_id: number }>(`/api/interactions/${id}/feature`, { method: "POST" }),
 };

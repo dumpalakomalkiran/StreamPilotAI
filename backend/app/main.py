@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     HTTPException,
@@ -25,7 +26,7 @@ from sqlalchemy.orm import Session, selectinload
 from starlette.concurrency import run_in_threadpool
 
 from app.config import get_settings
-from app.database import Base, engine, get_db, upgrade_schema
+from app.database import Base, SessionLocal, engine, get_db, upgrade_schema
 from app.models import (
     Challenge,
     ChatMessage,
@@ -47,12 +48,19 @@ from app.schemas import (
 )
 from app.services.challenge_clock import run_challenge_clock
 from app.services.challenges import generate_challenge
+from app.services.dashboard_socket import broadcast as dashboard_broadcast
+from app.services.dashboard_socket import connect as dashboard_connect
+from app.services.dashboard_socket import disconnect as dashboard_disconnect
+from app.services.dashboard_socket import interaction_payload as dashboard_interaction_payload
 from app.services.eventsub import run_eventsub
 from app.services.interactions import refresh_snoozed_groups, run_grouping_worker, score_group
 from app.services.overlay import broadcast as overlay_broadcast
 from app.services.overlay import connect as overlay_connect
 from app.services.overlay import disconnect as overlay_disconnect
 from app.services.overlay import revoke as overlay_revoke
+from app.services.question_overlay import broadcast as question_overlay_broadcast
+from app.services.question_overlay import connect as question_overlay_connect
+from app.services.question_overlay import disconnect as question_overlay_disconnect
 from app.services.twitch_auth import create_authorization_url, exchange_callback
 from app.services.twitch_chat import send_chat_message
 from app.services.voting import (
@@ -466,25 +474,60 @@ def _transition_interaction(db: Session, interaction_id: int, broadcaster_id: st
         group.snoozed_until = datetime.now(UTC) + timedelta(minutes=minutes or 1)
     db.commit()
     db.refresh(group)
-    return _interaction_payload(db, group, include_messages=True)
+    session = db.get(StreamSession, group.session_id)
+    was_featured = bool(session and session.featured_interaction_group_id == group.id)
+    if was_featured:
+        session.featured_interaction_group_id = None
+        db.commit()
+    result = _interaction_payload(db, group, include_messages=True)
+    if was_featured:
+        result["_featured_cleared"] = True
+    return result
 
 
 @app.post(
     "/api/interactions/{interaction_id}/answer", response_model=InteractionDetailResponse, tags=["Interactions"],
     summary="Mark an interaction answered", description="Marks an open interaction as answered and records the time. Only the owning broadcaster can update it.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
 )
-def answer_interaction(interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+def answer_interaction(interaction_id: int = Path(ge=1), background: BackgroundTasks = None,
+                       db: Session = Depends(get_db),
                        broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
-    return _transition_interaction(db, interaction_id, broadcaster_id, "answer")
+    result = _transition_interaction(db, interaction_id, broadcaster_id, "answer")
+    featured_cleared = bool(result.pop("_featured_cleared", False))
+    if background is not None:
+        background.add_task(dashboard_broadcast, broadcaster_id, {"type": "interaction.updated", "interaction": _queue_event_payload(result)})
+        session = _interaction_session(db, interaction_id, broadcaster_id)
+        if featured_cleared and session and session.overlay_token_hash:
+            background.add_task(question_overlay_broadcast, session.overlay_token_hash, {"type": "question.hidden"})
+    return result
 
 
 @app.post(
     "/api/interactions/{interaction_id}/dismiss", response_model=InteractionDetailResponse, tags=["Interactions"],
     summary="Dismiss an interaction", description="Dismisses an open interaction for this broadcaster; enough distinct new askers can reopen it later.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
 )
-def dismiss_interaction(interaction_id: int = Path(ge=1), db: Session = Depends(get_db),
+def dismiss_interaction(interaction_id: int = Path(ge=1), background: BackgroundTasks = None,
+                        db: Session = Depends(get_db),
                         broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
-    return _transition_interaction(db, interaction_id, broadcaster_id, "dismiss")
+    result = _transition_interaction(db, interaction_id, broadcaster_id, "dismiss")
+    featured_cleared = bool(result.pop("_featured_cleared", False))
+    if background is not None:
+        background.add_task(dashboard_broadcast, broadcaster_id, {"type": "interaction.updated", "interaction": _queue_event_payload(result)})
+        session = _interaction_session(db, interaction_id, broadcaster_id)
+        if featured_cleared and session and session.overlay_token_hash:
+            background.add_task(question_overlay_broadcast, session.overlay_token_hash, {"type": "question.hidden"})
+    return result
+
+
+def _interaction_session(db: Session, interaction_id: int, broadcaster_id: str) -> StreamSession | None:
+    group = db.scalar(select(InteractionGroup).where(
+        InteractionGroup.id == interaction_id, InteractionGroup.broadcaster_id == broadcaster_id
+    ))
+    return db.get(StreamSession, group.session_id) if group else None
+
+
+def _queue_event_payload(payload: dict[str, object]) -> dict[str, object]:
+    return {key: value for key, value in payload.items() if key != "messages"}
 
 
 @app.post(
@@ -492,8 +535,43 @@ def dismiss_interaction(interaction_id: int = Path(ge=1), db: Session = Depends(
     summary="Snooze an interaction", description="Snoozes an open interaction for the requested number of minutes (1–1440); it reopens automatically at expiry.", responses={404: {"description": "Interaction not found for this broadcaster."}, 409: {"description": "Interaction is not open."}},
 )
 def snooze_interaction(payload: SnoozeInteractionRequest, interaction_id: int = Path(ge=1),
+                       background: BackgroundTasks = None,
                        db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)) -> dict[str, object]:
-    return _transition_interaction(db, interaction_id, broadcaster_id, "snooze", payload.minutes)
+    result = _transition_interaction(db, interaction_id, broadcaster_id, "snooze", payload.minutes)
+    featured_cleared = bool(result.pop("_featured_cleared", False))
+    if background is not None:
+        background.add_task(dashboard_broadcast, broadcaster_id, {"type": "interaction.updated", "interaction": _queue_event_payload(result)})
+        session = _interaction_session(db, interaction_id, broadcaster_id)
+        if featured_cleared and session and session.overlay_token_hash:
+            background.add_task(question_overlay_broadcast, session.overlay_token_hash, {"type": "question.hidden"})
+    return result
+
+
+@app.post("/api/interactions/{interaction_id}/feature", tags=["Interactions"],
+          summary="Show a safe queue question on the overlay",
+          description="Features only the canonical text and viewer count for an open queue item; member messages and identities are never sent to the overlay.")
+def feature_interaction(interaction_id: int = Path(ge=1), background: BackgroundTasks = None,
+                        db: Session = Depends(get_db), broadcaster_id: str = Depends(require_streamer)):
+    group = _scoped_interaction_group(db, interaction_id, broadcaster_id)
+    if group.status != "open":
+        raise HTTPException(status_code=409, detail="Only open interactions can be featured")
+    session = db.get(StreamSession, group.session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Stream session not found")
+    session.featured_interaction_group_id = group.id
+    db.commit()
+    if background is not None:
+        background.add_task(dashboard_broadcast, broadcaster_id, {
+            "type": "interaction.updated", "interaction": dashboard_interaction_payload(group), "featured": True,
+        })
+        if session.overlay_token_hash:
+            background.add_task(question_overlay_broadcast, session.overlay_token_hash, {
+                "type": "question.featured", "question": {
+                    "canonical_text": group.canonical_text, "kind": group.kind,
+                    "asker_count": group.asker_count,
+                },
+            })
+    return {"status": "featured", "interaction_id": group.id}
 
 
 @app.post(
@@ -657,6 +735,42 @@ async def create_overlay_token(
     return {"token": token, "url": f"{settings.frontend_url.rstrip('/')}/overlay?token={token}"}
 
 
+@app.websocket("/ws/dashboard")
+async def dashboard_websocket(websocket: WebSocket) -> None:
+    origin = websocket.headers.get("origin")
+    if origin not in settings.cors_origin_list:
+        await websocket.close(code=1008)
+        return
+    session_token = websocket.cookies.get("stream_pilot_session")
+    def resolve_broadcaster() -> str | None:
+        if settings.demo_mode:
+            return "demo"
+        if not session_token:
+            return None
+        db = SessionLocal()
+        try:
+            credential = db.scalar(select(TwitchCredential).where(
+                TwitchCredential.auth_session_hash == _hash_token(session_token),
+                TwitchCredential.auth_session_expires_at > datetime.now(UTC),
+            ))
+            return credential.broadcaster_id if credential else None
+        finally:
+            db.close()
+
+    broadcaster_id = await run_in_threadpool(resolve_broadcaster)
+    if not broadcaster_id:
+        await websocket.close(code=1008)
+        return
+    await dashboard_connect(broadcaster_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        dashboard_disconnect(broadcaster_id, websocket)
+
+
 @app.websocket("/ws/overlay")
 async def overlay_websocket(websocket: WebSocket) -> None:
     protocols = websocket.scope.get("subprotocols", [])
@@ -699,3 +813,45 @@ async def overlay_websocket(websocket: WebSocket) -> None:
         pass
     finally:
         overlay_disconnect(token_hash, websocket)
+
+
+@app.websocket("/ws/overlay/question")
+async def question_overlay_websocket(websocket: WebSocket) -> None:
+    protocols = websocket.scope.get("subprotocols", [])
+    token = protocols[1] if len(protocols) >= 2 and protocols[0] == "streampilot-overlay" else ""
+    if not token:
+        await websocket.close(code=1008)
+        return
+    token_hash = _hash_token(token)
+
+    def load_question():
+        db = SessionLocal()
+        try:
+            session = db.scalar(select(StreamSession).where(StreamSession.overlay_token_hash == token_hash))
+            if session is None:
+                return None
+            group = db.scalar(select(InteractionGroup).where(
+                InteractionGroup.id == session.featured_interaction_group_id,
+                InteractionGroup.broadcaster_id == session.broadcaster_id,
+                InteractionGroup.status == "open",
+            )) if session.featured_interaction_group_id is not None else None
+            question = ({"canonical_text": group.canonical_text, "kind": group.kind,
+                         "asker_count": group.asker_count} if group else None)
+            return {"question": question}
+        finally:
+            db.close()
+
+    state = await run_in_threadpool(load_question)
+    if state is None:
+        await websocket.close(code=1008)
+        return
+    question = state["question"]
+    await question_overlay_connect(token_hash, websocket)
+    try:
+        await websocket.send_json({"type": "question.featured", "question": question} if question else {"type": "question.hidden"})
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        question_overlay_disconnect(token_hash, websocket)

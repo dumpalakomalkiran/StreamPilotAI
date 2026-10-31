@@ -18,3 +18,7 @@
 - Use Twitch `stream.online`/`stream.offline` EventSub subscriptions to open and close the broadcaster's live session. Twitch documents these subscriptions as requiring no user scopes; preserve existing chat scopes unchanged.
 - SQLite uses WAL with a 5-second busy timeout. Synchronous ORM work in async EventSub, challenge-clock, OAuth callback, challenge action and overlay paths is dispatched through the threadpool.
 - Keep Gemini structured output on the installed SDK's `response_schema` Pydantic integration (confirmed with google-genai 1.75.0); set `gemini-3.5-flash-lite` as the documented default while allowing `GEMINI_MODEL` override.
+
+## 2026-11-01 — Real-time queue and featured overlay
+- Keep the overlay socket's token auth and challenge messages; add a separate session-cookie-authenticated `/ws/dashboard` broadcaster channel. Clients refetch REST state after reconnect rather than relying on event replay.
+- Persist the optional featured group ID on `StreamSession`. Only canonical queue text, kind and viewer count reach the overlay. Answer, dismiss and moderation clear the feature, and moderation replaces affected canonical text from retained messages.

@@ -19,16 +19,20 @@ from app.models import (
     Challenge,
     ChatMessage,
     DeletedChatMessage,
+    Interaction,
     ProcessedEvent,
     StreamSession,
     TwitchCredential,
 )
+from app.services.dashboard_socket import broadcast as broadcast_dashboard
+from app.services.dashboard_socket import interaction_payload
 from app.services.interactions import (
     delete_interactions_for_chat_messages,
     event_is_emote_only,
     ingest_message,
 )
 from app.services.overlay import broadcast
+from app.services.question_overlay import broadcast as broadcast_question_overlay
 from app.services.twitch_auth import refresh_access_token_if_needed
 from app.services.voting import cast_vote
 
@@ -69,24 +73,28 @@ async def _subscribe_chat_events(session_id: str, broadcaster_id: str, token: st
         await _subscribe(session_id, broadcaster_id, token, subscription_type)
 
 
-def _set_stream_live(broadcaster_id: str, is_live: bool, event_id: str) -> None:
+def _set_stream_live(broadcaster_id: str, is_live: bool, event_id: str) -> bool:
     db = SessionLocal()
     try:
         inserted = db.execute(sqlite_insert(ProcessedEvent).values(event_id=event_id[:128])
                               .on_conflict_do_nothing(index_elements=[ProcessedEvent.event_id]))
         if inserted.rowcount != 1:
             db.rollback()
-            return
+            return False
         session = db.scalar(select(StreamSession).where(
             StreamSession.broadcaster_id == broadcaster_id,
             StreamSession.ended_at.is_(None),
         ).order_by(StreamSession.id.desc()))
+        changed = False
         if is_live and session is None:
             db.add(StreamSession(broadcaster_id=broadcaster_id, mode="live"))
+            changed = True
         elif not is_live and session is not None:
             session.ended_at = datetime.now(UTC)
+            changed = True
             logger.info("StreamPilot session ended from Twitch stream.offline (broadcaster=%s)", broadcaster_id)
         db.commit()
+        return changed
     finally:
         db.close()
 
@@ -122,13 +130,13 @@ def _remember_deleted_messages(db, session_id: int, message_ids: list[str]) -> N
 
 def _process_chat_removal(
     broadcaster_id: str, subscription_type: str, payload: dict
-) -> None:
+) -> tuple[str | None, list[dict[str, object]]]:
     if not isinstance(payload, dict) or not isinstance(payload.get("event"), dict):
         logger.warning("Malformed Twitch chat removal event skipped (type=%s)", subscription_type)
-        return
+        return None, []
     event = payload["event"]
     if event.get("broadcaster_user_id") != broadcaster_id:
-        return
+        return None, []
 
     db = SessionLocal()
     try:
@@ -137,15 +145,17 @@ def _process_chat_removal(
             StreamSession.ended_at.is_(None),
         ).order_by(StreamSession.id.desc()))
         if session is None:
-            return
+            return None, []
+
+        queue_events: list[dict[str, object]] = []
 
         if subscription_type == "channel.chat.message_delete":
             message_id = event.get("message_id")
             if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
                 logger.warning("Malformed Twitch chat deletion skipped (missing or invalid message ID)")
-                return
+                return None, []
             _remember_deleted_messages(db, session.id, [message_id])
-            delete_interactions_for_chat_messages(db, [message_id])
+            queue_events.extend(delete_interactions_for_chat_messages(db, [message_id]))
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
                 ChatMessage.event_id == message_id,
@@ -154,13 +164,13 @@ def _process_chat_removal(
             target_user_id = event.get("target_user_id")
             if not isinstance(target_user_id, str) or not target_user_id:
                 logger.warning("Malformed Twitch user-clear event skipped (missing target user ID)")
-                return
+                return None, []
             affected_ids = db.scalars(select(ChatMessage.event_id).where(
                 ChatMessage.session_id == session.id,
                 ChatMessage.chatter_id == target_user_id[:80],
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
-            delete_interactions_for_chat_messages(db, affected_ids)
+            queue_events.extend(delete_interactions_for_chat_messages(db, affected_ids))
             result = db.execute(delete(ChatMessage).where(
                 ChatMessage.session_id == session.id,
                 ChatMessage.chatter_id == target_user_id[:80],
@@ -170,14 +180,17 @@ def _process_chat_removal(
                 ChatMessage.session_id == session.id
             )).all()
             _remember_deleted_messages(db, session.id, affected_ids)
-            delete_interactions_for_chat_messages(db, affected_ids)
+            queue_events.extend(delete_interactions_for_chat_messages(db, affected_ids))
             result = db.execute(delete(ChatMessage).where(ChatMessage.session_id == session.id))
         else:
-            return
+            return None, []
 
+        overlay_hash = session.overlay_token_hash if session.featured_interaction_group_id is not None else None
+        session.featured_interaction_group_id = None
         db.commit()
         logger.info("Twitch chat removal applied (type=%s, removed_count=%d)",
                     subscription_type, result.rowcount or 0)
+        return overlay_hash, queue_events
     finally:
         db.close()
 
@@ -268,12 +281,20 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
                 or not isinstance(event_id, str) or not event_id):
             logger.warning("Malformed Twitch stream event skipped (type=%s)", subscription_type)
             return
-        await asyncio.to_thread(
+        changed = await asyncio.to_thread(
             _set_stream_live, broadcaster_id, subscription_type == "stream.online", event_id
         )
+        if changed:
+            await broadcast_dashboard(broadcaster_id, {
+                "type": "session.started" if subscription_type == "stream.online" else "session.ended"
+            })
         return
     if subscription_type != "channel.chat.message":
-        await asyncio.to_thread(_process_chat_removal, broadcaster_id, subscription_type, payload)
+        overlay_hash, queue_events = await asyncio.to_thread(_process_chat_removal, broadcaster_id, subscription_type, payload)
+        for queue_event in queue_events:
+            await broadcast_dashboard(broadcaster_id, queue_event)
+        if overlay_hash:
+            await broadcast_question_overlay(overlay_hash, {"type": "question.hidden"})
         return
 
     event = payload.get("event")
@@ -292,6 +313,24 @@ async def _process_notification(broadcaster_id: str, metadata: dict, payload: di
     )
     if overlay_hash and result is not None:
         await broadcast(overlay_hash, {"type": "vote.updated", "challenge": result})
+    queue_event = await asyncio.to_thread(_queue_event_for_message, broadcaster_id, metadata.get("message_id"))
+    if queue_event:
+        await broadcast_dashboard(broadcaster_id, queue_event)
+
+
+def _queue_event_for_message(broadcaster_id: str, event_id: object) -> dict[str, object] | None:
+    if not isinstance(event_id, str):
+        return None
+    db = SessionLocal()
+    try:
+        interaction = db.scalar(select(Interaction).where(
+            Interaction.chat_message_id == event_id, Interaction.broadcaster_id == broadcaster_id
+        ))
+        if not interaction or not interaction.group:
+            return None
+        return {"type": "interaction.updated", "interaction": interaction_payload(interaction.group)}
+    finally:
+        db.close()
 
 
 async def run_eventsub(broadcaster_id: str) -> None:

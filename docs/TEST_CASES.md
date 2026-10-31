@@ -35,6 +35,9 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T29 | Interaction priority | Explainable asker/recency/repetition components order groups deterministically |
 | T30 | Interaction lifecycle | Answer, dismiss, snooze expiry and new-asker reopen behave as configured |
 | T31 | Interaction tenant/privacy | List/detail/actions are broadcaster-scoped; moderated chat deletes its queue item |
+| T32 | Dashboard WebSocket | Cookie authentication and broadcaster-only event delivery; reconnect uses REST snapshot |
+| T33 | Smart Queue UI | Mocked REST/WebSocket render, filter, connection indicator, answer/snooze/dismiss/feature actions and keyboard shortcuts |
+| T34 | Featured overlay question | Only canonical question/count display; reconnect restores open feature; answer/dismiss/moderation hides it |
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.

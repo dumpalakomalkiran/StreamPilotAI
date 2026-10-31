@@ -11,10 +11,12 @@ type OverlayChallenge = {
   winning_option_id: number | null;
   options: Array<{ id: number; label: string; votes: number }>;
 };
+type FeaturedQuestion = { canonical_text: string; kind: string; asker_count: number };
 
 export default function Overlay() {
   const token = new URLSearchParams(window.location.search).get("token");
   const [challenge, setChallenge] = useState<OverlayChallenge | null>(null);
+  const [featuredQuestion, setFeaturedQuestion] = useState<FeaturedQuestion | null>(null);
   const [connection, setConnection] = useState("Connecting…");
   const [now, setNow] = useState(Date.now());
 
@@ -54,6 +56,32 @@ export default function Overlay() {
   }, [token]);
 
   useEffect(() => {
+    if (!token) return;
+    let socket: WebSocket | undefined;
+    let retryTimer: number | undefined;
+    let stopped = false;
+    const connectQuestionSocket = () => {
+      if (stopped) return;
+      socket = new WebSocket(`${websocketUrl}/ws/overlay/question`, ["streampilot-overlay", token]);
+      socket.onmessage = (message) => {
+        const event = JSON.parse(message.data) as { type: string; question?: FeaturedQuestion | null };
+        if (event.type === "question.featured") setFeaturedQuestion(event.question ?? null);
+        if (event.type === "question.hidden") setFeaturedQuestion(null);
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        if (!stopped) retryTimer = window.setTimeout(connectQuestionSocket, 1500);
+      };
+    };
+    connectQuestionSocket();
+    return () => {
+      stopped = true;
+      if (retryTimer) window.clearTimeout(retryTimer);
+      socket?.close();
+    };
+  }, [token]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -78,6 +106,7 @@ export default function Overlay() {
         <p style={{ margin: "18px 0 0", color: "#aeb2c3" }}>{total} votes · {secondsLeft !== null ? `Voting closes in ${Math.floor(secondsLeft / 60)}:${String(secondsLeft % 60).padStart(2, "0")}` : "Voting closed"} {challenge.source === "demo" && "· Demo"}</p>
         {challenge.status === "completed" && <p role="status">{challenge.winning_option_id === null ? "The vote ended in a tie." : `Winner: ${challenge.options.find((option) => option.id === challenge.winning_option_id)?.label ?? "Selected option"}`}</p>}
       </> : <><h1 style={{ margin: 0, fontSize: 26 }}>Ready for the next challenge</h1><p style={{ color: "#c7c9d4" }}>The approved challenge and live vote will appear here.</p></>}
+      {featuredQuestion && <aside className="overlay-question" aria-label="Question of the moment"><span>QUESTION OF THE MOMENT · {featuredQuestion.asker_count} VIEWERS</span><strong>{featuredQuestion.canonical_text}</strong></aside>}
       <small style={{ color: "#8990a4" }}>{connection}</small>
     </section>
   </main>;

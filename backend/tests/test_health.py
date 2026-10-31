@@ -28,6 +28,7 @@ def test_management_endpoints_require_authentication_in_live_mode(monkeypatch):
     assert client.post("/api/interactions/1/answer").status_code == 401
     assert client.post("/api/interactions/1/dismiss").status_code == 401
     assert client.post("/api/interactions/1/snooze", json={"minutes": 15}).status_code == 401
+    assert client.post("/api/interactions/1/feature").status_code == 401
 
 def test_status_does_not_expose_secrets():
     body = client.get("/api/status").json()

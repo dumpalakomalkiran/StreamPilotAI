@@ -216,10 +216,35 @@ def test_moderated_message_removes_its_interaction_and_recalculates_group(db) ->
                             chat_message_id=message.event_id, user_login_hash="hashed-viewer",
                             text=message.text))
     session.commit()
-    interactions.delete_interactions_for_chat_messages(session, [message.event_id])
+    events = interactions.delete_interactions_for_chat_messages(session, [message.event_id])
     session.commit()
     assert session.scalar(select(Interaction)) is None
     assert session.scalar(select(InteractionGroup)) is None
+    assert events == [{"type": "interaction.updated", "interaction": {"id": group.id, "deleted": True}}]
+
+
+def test_moderation_replaces_canonical_text_with_retained_member(db) -> None:
+    session, stream = db
+    first = add_message(session, stream, "moderated-first", "viewer-1", "Where is the secret code?")
+    remaining = add_message(session, stream, "retained-second", "viewer-2", "Where is the game map?")
+    group = InteractionGroup(
+        broadcaster_id=stream.broadcaster_id, session_id=stream.id,
+        canonical_text=first.text, normalized_text=interactions.normalize_text(first.text),
+        summary=first.text, status="open",
+    )
+    session.add(group)
+    session.flush()
+    session.add_all([
+        Interaction(broadcaster_id=stream.broadcaster_id, group_id=group.id,
+                    chat_message_id=first.event_id, user_login_hash="hash-1", text=first.text),
+        Interaction(broadcaster_id=stream.broadcaster_id, group_id=group.id,
+                    chat_message_id=remaining.event_id, user_login_hash="hash-2", text=remaining.text),
+    ])
+    session.commit()
+    interactions.delete_interactions_for_chat_messages(session, [first.event_id])
+    session.commit()
+    assert group.canonical_text == remaining.text
+    assert "secret code" not in group.canonical_text
 
 
 def test_snooze_expiry_reopens_group(db) -> None:

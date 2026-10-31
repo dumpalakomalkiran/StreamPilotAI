@@ -12,7 +12,7 @@ Audit Twitch OAuth grant/state/redirect/scopes/token refresh/validation/revocati
 Verify broadcaster/session ownership on all reads/writes; demo-mode production safety; cookies/CSRF/CORS; OAuth lifecycle; key rotation; overlay token rotation; logging; rate limits; single-process worker assumptions; SQLite migration/backup. **Gate:** security matrix passes and residual limitations are documented.
 
 ## Phase 3 — UX and resilience
-Test loading/empty/error/reconnect/stale states, demo/live distinction, overlay reconnect recovery, bounded chat, accessibility and mobile. Improve only confirmed defects.
+Implemented Smart Queue raw-chat/queue split, status/kind/search filters, queue actions, keyboard shortcuts, connection indicator, dashboard WebSocket REST recovery, and optional featured overlay question. Verify UI tests/typecheck/build once frontend dependencies install; test loading/empty/error/reconnect/stale states, demo/live distinction, bounded chat, accessibility and mobile. Improve only confirmed defects.
 
 ## Phase 4 — Deployment readiness
 Clean Compose build, persistent DB volume, Nginx WebSocket proxy, exact callback, HTTPS, strict CORS and production secrets. Deploy only with approval.
@@ -24,4 +24,4 @@ Check rules/deadline, repository/secret scan, honest demo evidence and Codex use
 React dashboard/overlay; FastAPI/Pydantic; SQLAlchemy/SQLite; challenge lifecycle/voting; Gemini adapter; Twitch OAuth/token handling; EventSub chat/moderation; protected overlay/WebSocket; mocked tests; Docker/Compose/Nginx files. Presence in source is not proof of live verification.
 
 ## Smart Interaction Queue — implementation added
-The backend queue adds EventSub question/request intake, same-session fuzzy grouping, optional bounded batched Gemini grouping with deterministic fallback, explainable priority, broadcaster-scoped lifecycle APIs and moderation cleanup. Its local tests are mocked and do not verify real Gemini/EventSub delivery. Frontend queue presentation remains a follow-up; the existing dashboard is preserved.
+The queue adds EventSub question/request intake, same-session fuzzy grouping, optional bounded batched Gemini grouping with deterministic fallback, explainable priority, broadcaster-scoped lifecycle APIs, a broadcaster-scoped dashboard WebSocket and a Smart Queue UI alongside raw chat and the existing challenge editor. The existing overlay protocol retains its auth/challenge behavior and supports an optional featured queue question. Local tests are mocked and do not verify real Gemini/EventSub delivery.

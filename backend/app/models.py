@@ -27,6 +27,7 @@ class StreamSession(Base):
     broadcaster_id: Mapped[str] = mapped_column(String(80), default="demo")
     mode: Mapped[str] = mapped_column(String(10), default="demo")
     overlay_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    featured_interaction_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     challenges: Mapped[list["Challenge"]] = relationship(back_populates="session")

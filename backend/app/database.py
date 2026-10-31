@@ -40,7 +40,10 @@ def upgrade_schema() -> None:
     if engine.dialect.name != "sqlite":
         return
     additive_columns = {
-        "stream_sessions": {"overlay_token_hash": "VARCHAR(64)"},
+        "stream_sessions": {
+            "overlay_token_hash": "VARCHAR(64)",
+            "featured_interaction_group_id": "INTEGER",
+        },
         "twitch_credentials": {
             "auth_session_hash": "VARCHAR(64)",
             "auth_session_expires_at": "DATETIME",

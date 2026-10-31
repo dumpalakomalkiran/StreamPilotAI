@@ -17,10 +17,53 @@ vi.mock("./api", () => ({
     launchChallenge: vi.fn(),
     endChallenge: vi.fn(),
     listChallenges: vi.fn(() => Promise.resolve([])),
+    listChatMessages: vi.fn(() => Promise.resolve([])),
+    listInteractions: vi.fn(() => Promise.resolve([{
+      id: 41, kind: "question", canonical_text: "Which GPU are you using?", summary: "GPU question",
+      status: "open", snoozed_until: null, priority_score: 9.4,
+      priority_components: { askers: 5.5, recency: 3, repetition: 0.9 },
+      asker_count: 4, message_count: 6, first_seen_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString(), answered_at: null,
+    }])),
+    answerInteraction: vi.fn(() => Promise.resolve({})),
+    dismissInteraction: vi.fn(() => Promise.resolve({})),
+    snoozeInteraction: vi.fn(() => Promise.resolve({})),
+    featureInteraction: vi.fn(() => Promise.resolve({ status: "featured", interaction_id: 41 })),
   },
 }));
 
 describe("StreamPilot starter dashboard", () => {
+  it("renders the live queue and executes card actions", async () => {
+    const sockets: MockSocket[] = [];
+    class MockSocket {
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: string }) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: (() => void) | null = null;
+      constructor() { sockets.push(this); }
+      close() { this.onclose?.(); }
+    }
+    vi.stubGlobal("WebSocket", MockSocket);
+    render(<App />);
+    expect(await screen.findByText("Which GPU are you using?")).toBeInTheDocument();
+    sockets[0]?.onopen?.();
+    expect(screen.getByRole("status", { name: /live updates/i })).toBeInTheDocument();
+    sockets[0]?.onmessage?.({ data: JSON.stringify({ type: "interaction.updated" }) });
+    expect(api.listInteractions).toHaveBeenCalled();
+    expect(screen.getByText("4 viewers · 6 messages")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /answer/i }));
+    await waitFor(() => expect(api.answerInteraction).toHaveBeenCalledWith(41));
+    fireEvent.keyDown(screen.getByRole("article", { name: /queue card/i }), { key: "s" });
+    await waitFor(() => expect(api.snoozeInteraction).toHaveBeenCalledWith(41, 15));
+    fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+    await waitFor(() => expect(api.dismissInteraction).toHaveBeenCalledWith(41));
+    fireEvent.click(screen.getByRole("button", { name: /show on stream/i }));
+    await waitFor(() => expect(api.featureInteraction).toHaveBeenCalledWith(41));
+    const card = screen.getByRole("article", { name: /queue card/i });
+    fireEvent.keyDown(card, { key: "a" });
+    await waitFor(() => expect(api.answerInteraction).toHaveBeenCalledTimes(2));
+    vi.unstubAllGlobals();
+  });
   it("renders Live Studio and clearly labels demo mode", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "Live Studio" })).toBeInTheDocument();
