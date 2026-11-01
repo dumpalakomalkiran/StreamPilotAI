@@ -142,6 +142,7 @@ class StatusResponse(BaseModel):
         "twitch_configured": True,
         "twitch_authorized": True,
         "eventsub_worker": "running",
+        "live_test_mode": False,
         "integrations_verified": False,
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini.",
     }]})
@@ -150,6 +151,7 @@ class StatusResponse(BaseModel):
     twitch_configured: bool
     twitch_authorized: bool
     eventsub_worker: str
+    live_test_mode: bool = False
     integrations_verified: bool
     message: str
 

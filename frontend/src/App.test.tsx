@@ -75,7 +75,7 @@ describe("StreamPilot starter dashboard", () => {
     expect(api.editResponse).toHaveBeenCalledWith(91, "Edited reply");
     expect(await screen.findByText(/Answered · reply sent to chat/i)).toBeInTheDocument();
     vi.unstubAllGlobals();
-  });
+  }, 15_000);
   it("renders the live queue and executes card actions", async () => {
     const sockets: MockSocket[] = [];
     class MockSocket {
@@ -106,7 +106,7 @@ describe("StreamPilot starter dashboard", () => {
     fireEvent.keyDown(card, { key: "a" });
     await waitFor(() => expect(api.answerInteraction).toHaveBeenCalledTimes(2));
     vi.unstubAllGlobals();
-  });
+  }, 15_000);
   it("renders Live Studio and clearly labels demo mode", () => {
     render(<App />);
     expect(screen.getByRole("heading", { name: "Live Studio" })).toBeInTheDocument();

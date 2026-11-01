@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import logging
+import os
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -215,9 +216,16 @@ def status(db: Session = Depends(get_db)) -> dict[str, object]:
         "twitch_configured": twitch_configured,
         "twitch_authorized": twitch_authorized,
         "eventsub_worker": eventsub_worker,
+        "live_test_mode": os.environ.get("LIVE_TEST_MODE", "").strip().casefold() in {"true", "1", "yes"},
         "integrations_verified": False,
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini."
     }
+
+
+@app.get("/api/auth/identity", tags=["Auth"], summary="Return the authenticated broadcaster ID")
+def authenticated_identity(broadcaster_id: str = Depends(require_streamer)) -> dict[str, str]:
+    """Expose only the owning ID for clients that must verify account scoping."""
+    return {"broadcaster_id": broadcaster_id}
 
 
 def _authorized_broadcaster() -> str | None:

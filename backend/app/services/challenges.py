@@ -11,7 +11,11 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.schemas import ChallengeOption, ChallengeProposal, GeminiChallengeOutput
-from app.services.ai_usage import record_ai_usage
+from app.services.ai_usage import (
+    record_ai_usage,
+    release_live_test_gemini_call,
+    reserve_live_test_gemini_call,
+)
 
 logger = logging.getLogger(__name__)
 GATEWAY_SAFE_TIMEOUT_SECONDS = 50
@@ -47,6 +51,11 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
     """Generate a proposal only when this function is explicitly invoked by the streamer."""
     settings = get_settings()
     if not settings.gemini_api_key or not settings.gemini_model:
+        return make_fallback_challenge()
+    reservation = reserve_live_test_gemini_call()
+    if reservation is False:
+        record_ai_usage(operation="challenge_suggestion", model=settings.gemini_model,
+                        latency_ms=0, failure="live_test_call_limit", call_made=False)
         return make_fallback_challenge()
 
     # Chat is quoted as data and never merged into the instructions. Bound both count and size.
@@ -114,3 +123,5 @@ async def generate_challenge(chat_messages: list[str]) -> ChallengeProposal:
                 settings.gemini_model, type(exc).__name__,
             )
         return make_fallback_challenge()
+    finally:
+        release_live_test_gemini_call(reservation)

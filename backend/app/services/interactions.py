@@ -27,7 +27,11 @@ from app.models import (
     StreamSession,
 )
 from app.schemas import GeminiPollSuggestion
-from app.services.ai_usage import record_ai_usage
+from app.services.ai_usage import (
+    record_ai_usage,
+    release_live_test_gemini_call,
+    reserve_live_test_gemini_call,
+)
 from app.services.dashboard_socket import interaction_payload
 from app.services.moderation import (
     ModerationClassification,
@@ -510,7 +514,8 @@ async def resolve_pending(db: Session | None = None, *, broadcaster_id: str, ses
     decisions: dict[int, GroupingDecision] = {}
     poll_suggestions: list[GeminiPollSuggestion] = []
     moderation_classifications: list[ModerationClassification] = []
-    if settings.gemini_api_key and settings.gemini_model:
+    reservation = reserve_live_test_gemini_call() if settings.gemini_api_key and settings.gemini_model else False
+    if reservation is True or reservation is None:
         try:
             output = await asyncio.wait_for(asyncio.to_thread(
                 _generate_grouping, candidate_payload, group_payload, poll_context, settings
@@ -542,6 +547,8 @@ async def resolve_pending(db: Session | None = None, *, broadcaster_id: str, ses
         except Exception as exc:  # noqa: BLE001 - provider failures must use deterministic fallback
             logger.warning("Gemini interaction grouping failed (error_type=%s); using deterministic grouping",
                            type(exc).__name__)
+        finally:
+            release_live_test_gemini_call(reservation)
 
     candidate_ids = {item["candidate_id"] for item in candidate_payload}
     if db is not None:

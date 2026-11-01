@@ -34,12 +34,20 @@ $env:LIVE_TEST_DASHBOARD_SESSION = "<copy locally; never paste into chat or comm
 $env:DEMO_MODE = "false"
 ```
 
-Review the synthetic script and current code before allowing side effects. The current harness implements preflight, schedule/limit validation, and report generation, but **does not yet implement the full S0–S10 live scenario driver**. It refuses to send chat unless flags are supplied, but those flags do not make unimplemented steps safe or complete. Therefore, do not use the live-send flags yet. The `--offline` report accurately marks live scenarios blocked and UI screenshot automation not built.
+Review `data/live_test_script.jsonl` before a live run. The focused driver implements S0, S2, S3, S4, S5, S7 and S8; S1, S6, S9, S10 and S11 are deliberately not run. It requires the confirmation flag and all preflight gates to pass. It stops at the configured message, Gemini-call or elapsed-time ceiling. No results are live-verified until the owner runs it and checks the generated report.
 
-When the full scenario driver is implemented and reviewed, a future run command may be:
+Use a new usage log under the ignored repo `logs/` folder. Set the same path in the backend terminal and the harness terminal. Start with these limits (the program also enforces safe defaults and bounds):
 
 ```powershell
-python scripts/live_e2e.py --confirm-live-synthetic --allow-streamer-actions
+$env:LIVE_TEST_MODE = "true"
+$env:LIVE_TEST_MAX_MESSAGES = "200"
+$env:LIVE_TEST_MAX_GEMINI_CALLS = "150"
+$env:LIVE_TEST_MAX_SECONDS = "1800"
+$env:STREAM_PILOT_AI_USAGE_LOG = (Join-Path (Get-Location) "logs/live-e2e-<unique-run-id>.jsonl")
+$env:LIVE_TEST_CHANNEL_LOGIN = "your-demo-channel-login"
+$env:LIVE_TEST_DASHBOARD_SESSION = "<local authenticated app-session cookie value>"
+$env:DEMO_MODE = "false"
+python scripts/live_e2e.py --confirm-live
 ```
 
-The current command is intentionally documented as unavailable until then. Twitch's official authorization-code flow documentation describes the exact redirect matching and `state` parameter requirements: [Get OAuth Access Tokens](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/). The chat send API's required scope and limits are documented in [Twitch API Reference](https://dev.twitch.tv/docs/api/reference/#send-chat-message).
+The schedule contains only synthetic test text. Three different authorized viewer accounts are needed to pass the competing-viewer poll threshold; with fewer accounts S4 is BLOCKED. The harness sends a canary before scenarios, but it does not run until all checks pass. During S7, the owner must delete the indicated synthetic message and issue `/clear` as the broadcaster, then press Enter in the harness terminal. The harness ends the active session in S8, so use a dedicated test session. Twitch's official authorization-code flow documentation describes the redirect matching and `state` requirements: [Get OAuth Access Tokens](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/). The Send Chat Message scope is checked by the harness as `user:write:chat`; the endpoint is documented in the [Twitch API Reference](https://dev.twitch.tv/docs/api/reference/#send-chat-message).

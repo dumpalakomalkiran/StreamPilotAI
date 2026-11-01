@@ -8,6 +8,7 @@ In live mode `/api` management routes use HttpOnly `stream_pilot_session` from T
 ## System and OAuth
 - `GET /api/health`: liveness only, not provider connectivity.
 - `GET /api/status`: safe configuration/worker flags; `integrations_verified` remains false in reviewed code.
+- `GET /api/auth/identity`: authenticated broadcaster ID only; used by the live rehearsal harness to compare the dashboard session to the Twitch token before chat sends.
 - `GET /auth/twitch`: state cookie and Twitch redirect.
 - `GET /auth/twitch/callback`: state validation, code exchange, broadcaster identity, encrypted token storage and app cookie.
 - EventSub `stream.online` starts a persisted live session and `stream.offline` sets its `ended_at`; both use Twitch's broadcaster-only condition and add no OAuth scopes.

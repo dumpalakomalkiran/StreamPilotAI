@@ -1,7 +1,7 @@
 {
-  "run_id": "20261031T231907Z",
-  "started_at": "2026-10-31T23:19:07.727168+00:00",
-  "finished_at": "2026-10-31T23:19:07.731969+00:00",
+  "run_id": "20261101T055230Z",
+  "started_at": "2026-11-01T05:52:30.244718+00:00",
+  "finished_at": "2026-11-01T05:52:30.248239+00:00",
   "target_identity_match": false,
   "limits": {
     "messages": 200,
@@ -12,7 +12,55 @@
     {
       "scenario_id": "S0",
       "scenario": "Baseline live EventSub message flow",
-      "expected": "Live EventSub delivery and Gemini reachability are observed.",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S2",
+      "scenario": "Question detection, grouping and negative filtering",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S3",
+      "scenario": "Grounded AI reply and explicit send",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S4",
+      "scenario": "Poll suggestion, approved challenge, votes and timer",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S5",
+      "scenario": "Prompt injection, malformed input and rendering safety",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S7",
+      "scenario": "Message deletion and chat clear regression guard",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
+      "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
+      "status": "BLOCKED",
+      "evidence": {}
+    },
+    {
+      "scenario_id": "S8",
+      "scenario": "Session end, aggregate recap and caching",
+      "expected": "Live scenario executed with Twitch EventSub and Gemini.",
       "observed": "Offline mode deliberately makes no Twitch, Gemini, or app API requests.",
       "status": "BLOCKED",
       "evidence": {}
@@ -20,89 +68,41 @@
     {
       "scenario_id": "S1",
       "scenario": "Authentication, overlay and broadcaster isolation",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S2",
-      "scenario": "Question detection, grouping, lifecycle and fallback",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S3",
-      "scenario": "Grounded AI reply and explicit send",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S4",
-      "scenario": "Poll suggestion, approved challenge, votes and timer",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S5",
-      "scenario": "Prompt injection, malformed input and rendering safety",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
+      "expected": "Scenario is explicitly deferred in this rehearsal.",
+      "observed": "Skipped by the selected scenario plan.",
+      "status": "NOT RUN",
       "evidence": {}
     },
     {
       "scenario_id": "S6",
       "scenario": "Flag-only moderation review",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S7",
-      "scenario": "Message deletion and chat clear regression guard",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
-      "evidence": {}
-    },
-    {
-      "scenario_id": "S8",
-      "scenario": "Session end, aggregate recap and caching",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
+      "expected": "Scenario is explicitly deferred in this rehearsal.",
+      "observed": "Skipped by the selected scenario plan.",
+      "status": "NOT RUN",
       "evidence": {}
     },
     {
       "scenario_id": "S9",
       "scenario": "Restart, token rotation and Gemini degradation",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
+      "expected": "Scenario is explicitly deferred in this rehearsal.",
+      "observed": "Skipped by the selected scenario plan.",
+      "status": "NOT RUN",
       "evidence": {}
     },
     {
       "scenario_id": "S10",
       "scenario": "Optional native Twitch polls",
-      "expected": "Scenario is executed against the live demo channel.",
-      "observed": "No live scenario was run; this mode performs no network or account action.",
-      "status": "BLOCKED",
+      "expected": "Scenario is explicitly deferred in this rehearsal.",
+      "observed": "Skipped by the selected scenario plan.",
+      "status": "NOT RUN",
       "evidence": {}
     },
     {
       "scenario_id": "S11",
       "scenario": "Dashboard Playwright screenshots and console errors",
-      "expected": "Playwright captures and console checks are recorded.",
-      "observed": "Automated screenshot capture is not implemented in the harness.",
-      "status": "NOT BUILT",
+      "expected": "Scenario is explicitly deferred in this rehearsal.",
+      "observed": "Skipped by the selected scenario plan.",
+      "status": "NOT RUN",
       "evidence": {}
     }
   ],
