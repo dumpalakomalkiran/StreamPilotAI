@@ -105,6 +105,12 @@ async def test_missing_stream_facts_uses_holding_reply_without_gemini(monkeypatc
     assert response_suggestions.holding_reply("kya GPU use karte ho?").startswith("Achha sawaal")
 
 
+def test_holding_reply_rotates_without_inventing_facts():
+    replies = [response_suggestions.holding_reply("What GPU do you use?", index) for index in range(4)]
+    assert len(set(replies)) == 4
+    assert all("GPU" not in reply for reply in replies)
+
+
 def test_gemini_invalid_output_falls_back_to_safe_reply(monkeypatch):
     class Models:
         def generate_content(self, **_kwargs):

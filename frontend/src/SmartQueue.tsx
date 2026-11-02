@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Check, Clock3, Copy, MonitorUp, Radio, Send, Sparkles, X } from "lucide-react";
+import { Check, Clock3, Copy, Radio, Send, Sparkles, X } from "lucide-react";
 import { api, websocketUrl, type AIResponseSuggestion, type InteractionGroup } from "./api";
 
-type Props = { onError?: (message: string) => void; suggestionCount?: number };
+type Props = { onError?: (message: string) => void };
 
-export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
+export default function SmartQueue({ onError }: Props) {
   const [items, setItems] = useState<InteractionGroup[]>([]);
   const [connection, setConnection] = useState("Connecting");
   const [status, setStatus] = useState("open");
@@ -121,7 +121,7 @@ export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
   }
 
   return <section className="panel smart-queue" aria-labelledby="smart-queue-title">
-    <div className="queue-heading"><div><div className="panel-title" id="smart-queue-title"><Radio size={17}/> Smart Queue {suggestionCount > 0 && <span className="poll-count-badge" aria-label={`${suggestionCount} poll suggestions`}>{suggestionCount}</span>}</div><p>Repeated questions grouped by viewer intent</p></div><span className={`queue-connection ${connection === "Live updates" ? "connected" : ""}`} role="status"><i/> {connection}</span></div>
+    <div className="queue-heading"><div><div className="panel-title" id="smart-queue-title"><Radio size={17}/> Smart Queue</div><p>Repeated questions grouped by viewer intent</p></div><span className={`queue-connection ${connection === "Live updates" ? "connected" : ""}`} role="status"><i/> {connection}</span></div>
     <div className="queue-filters" aria-label="Queue filters">
       <label>Status<select aria-label="Filter status" value={status} onChange={(e) => setStatus(e.target.value)}><option value="">All statuses</option><option value="open">Open</option><option value="snoozed">Snoozed</option><option value="answered">Answered</option><option value="dismissed">Dismissed</option></select></label>
       <label>Kind<select aria-label="Filter kind" value={kind} onChange={(e) => setKind(e.target.value)}><option value="">All kinds</option><option value="question">Question</option><option value="request">Request</option><option value="suggestion">Suggestion</option><option value="other">Other</option></select></label>
@@ -133,10 +133,9 @@ export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
         <h3>{item.canonical_text}</h3><div className="queue-card-meta"><span>{item.asker_count} {item.asker_count === 1 ? "viewer" : "viewers"} · {item.message_count} messages</span><span><Clock3 size={13}/> {timeSince(item.last_seen_at, now)}</span></div>
         {item.status === "open" && <div className="queue-actions">
           <button className="queue-reply" disabled={busy === item.id} onClick={() => void suggestReply(item.id)}><Sparkles size={14}/>{replies[item.id]?.suggestion ? "Regenerate reply" : "Suggest reply"}</button>
-          <button className="queue-answer" disabled={busy === item.id} onClick={() => void action(item.id, () => api.answerInteraction(item.id))}><Check size={14}/> Answer <kbd>A</kbd></button>
-          <div className="snooze-wrap"><button disabled={busy === item.id} aria-label={`Snooze question ${item.id}`}><Clock3 size={14}/> Snooze</button><div className="snooze-menu" aria-label="Snooze duration">{[5, 15, 30].map((minutes) => <button key={minutes} onClick={() => void action(item.id, () => api.snoozeInteraction(item.id, minutes))}>{minutes} min</button>)}</div><kbd>S</kbd></div>
+          <button className="queue-answer" disabled={busy === item.id} onClick={() => void action(item.id, () => api.answerInteraction(item.id))}><Check size={14}/> Mark answered <kbd>A</kbd></button>
+          <div className="snooze-control" aria-label={`Snooze question ${item.id}`}><span className="snooze-label"><Clock3 size={14}/> Snooze</span><div className="snooze-options" aria-label="Snooze duration">{[5, 15, 30].map((minutes) => <button key={minutes} disabled={busy === item.id} onClick={() => void action(item.id, () => api.snoozeInteraction(item.id, minutes))}>{minutes}m</button>)}</div><kbd>S</kbd></div>
           <button disabled={busy === item.id} onClick={() => void action(item.id, () => api.dismissInteraction(item.id))}><X size={14}/> Dismiss <kbd>D</kbd></button>
-          <button className="queue-feature" disabled={busy === item.id} onClick={() => void action(item.id, () => api.featureInteraction(item.id))}><MonitorUp size={14}/> Show on stream</button>
         </div>}
         {replies[item.id]?.suggestion && !replies[item.id]?.sent && <div className="reply-draft">
           <label htmlFor={`reply-${item.id}`}>AI reply draft · review before sending</label>
@@ -149,7 +148,7 @@ export default function SmartQueue({ onError, suggestionCount = 0 }: Props) {
         {replies[item.id]?.error && !replies[item.id]?.suggestion && <p className="reply-error" role="alert">{replies[item.id].error}</p>}
       </article>) : <div className="queue-empty"><span>✦</span><strong>Nothing in the queue yet</strong><p>Questions and requests from live chat will appear here, grouped by intent.</p></div>}
     </div>
-    <p className="queue-shortcuts">Focus a card and press <kbd>A</kbd> answer, <kbd>S</kbd> snooze 15m, or <kbd>D</kbd> dismiss.</p>
+    <p className="queue-shortcuts">Focus a card and press <kbd>A</kbd> to mark answered, <kbd>S</kbd> to snooze 15m, or <kbd>D</kbd> to dismiss.</p>
   </section>;
 }
 

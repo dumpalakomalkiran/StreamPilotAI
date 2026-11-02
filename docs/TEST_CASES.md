@@ -47,7 +47,7 @@ Mock providers in automated tests; never consume quota or send real chat.
 | T41 | Poll disagreement detection | One mocked Gemini batch creates a poll for at least three distinct viewers across at least two competing choices; agreement and fewer than three viewers create none |
 | T42 | Poll safeguards | Cooldown, active challenge, and a pending suggestion suppress a new poll while grouping remains available |
 | T43 | Poll lifecycle and scoping | Broadcaster can list/dismiss; edited approval creates an existing challenge draft, then existing approve/launch/vote path counts option five; foreign broadcaster gets 404 |
-| T44 | Poll UI and results | UI renders supporting snippets, editable options/duration, count badge and actions; completion view uses existing challenge tallies |
+| T44 | Challenge editor and persisted results | Current UI renders one editable Challenge suggestion editor, keeps option-input focus while typing, launches through `!vote N`, and restores active/completed vote counts after a page reload |
 | T45 | Analytics fixture | Live counts, unique chatters, question groups, answer duration, poll decisions, top items, and exactly 30 minute buckets are computed from fixture rows |
 | T46 | Recap generation and cache | Mock structured Gemini output is validated; default repeat returns cache; explicit regenerate may issue one new call |
 | T47 | Empty recap | Empty session receives deterministic zero-activity recap without calling Gemini |
@@ -60,7 +60,7 @@ Mock providers in automated tests; never consume quota or send real chat.
 
 ## Owner-approved controlled live test
 Confirm channel/viewer accounts and approve any post/challenge. Test OAuth; harmless viewer chat; delete message; Gemini suggestion; approve/launch; viewer vote and vote change; overlay update; timer closure; one result announcement; overlay reconnect. Record only safe observations, never credentials or chat text. Enabled subscription is not delivery proof.
-| T54 | Optional native Twitch polls | Poll scope is absent by default and requested only after settings opt-in/re-authorization; mocked Helix creation success, Affiliate/Partner 403 with `!vote N` fallback, 429, active Twitch/StreamPilot conflict and missing-scope response; tenant-scoped tracking/end |
+| T54 | Optional native Twitch polls (legacy backend) | Poll scope is absent by default; backend-only mocked Helix tests cover opt-in/re-authorization, success, Affiliate/Partner 403 with `!vote N` fallback, 429, active-poll conflict and missing scope. No current dashboard control or live eligibility claim |
 | T55 | Synthetic replay provenance | Development replay uses the EventSub notification processor, persists `is_synthetic=true`, and exposes an explicit replay label; production refuses the replay command |
 | T56 | Queue evaluation | Curated JSONL labels run through production question detection and the deterministic fuzzy matcher; metrics print with documented limitations |
 | T57 | Prompt injection in queue grouping | Instruction-like chat remains JSON-delimited untrusted data; mocked Gemini output validates against `GroupingOutput`, has no tools, and triggers no Twitch send or challenge action |

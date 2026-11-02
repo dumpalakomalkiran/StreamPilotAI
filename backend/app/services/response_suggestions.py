@@ -12,15 +12,32 @@ from app.config import get_settings
 from app.services.ai_usage import record_ai_usage, reserve_live_test_gemini_call
 
 logger = logging.getLogger(__name__)
-HOLDING_REPLY = "Good question, I'll cover it after this round!"
+HOLDING_REPLIES = (
+    "Good question, I'll cover it after this round!",
+    "That's a great question—I'll get to it after this round.",
+    "I have that one noted; let me finish this round and I'll answer it.",
+    "I want to give that a proper answer. I'll cover it after this round!",
+)
+HOLDING_REPLY = HOLDING_REPLIES[0]
+HINGLISH_HOLDING_REPLIES = (
+    "Achha sawaal hai, is round ke baad batata hoon!",
+    "Ye accha question hai—round khatam hone do, phir answer karta hoon.",
+    "Isko note kar liya hai; is round ke baad detail mein batata hoon.",
+)
+HINDI_HOLDING_REPLIES = (
+    "अच्छा सवाल है, इस राउंड के बाद बताऊँगा!",
+    "यह बढ़िया सवाल है—राउंड के बाद इसका जवाब दूँगा।",
+    "इसे नोट कर लिया है; राउंड खत्म होने के बाद विस्तार से बताऊँगा।",
+)
 
 
-def holding_reply(question: str) -> str:
+def holding_reply(question: str, variant: int = 0) -> str:
+    variant = max(0, variant)
     if any("\u0900" <= char <= "\u097f" for char in question):
-        return "अच्छा सवाल है, इस राउंड के बाद बताऊँगा!"
+        return HINDI_HOLDING_REPLIES[variant % len(HINDI_HOLDING_REPLIES)]
     if any(word in question.casefold().split() for word in ("kya", "kaise", "kab", "kyun", "kaun", "kahan", "kitna")):
-        return "Achha sawaal hai, is round ke baad batata hoon!"
-    return HOLDING_REPLY
+        return HINGLISH_HOLDING_REPLIES[variant % len(HINGLISH_HOLDING_REPLIES)]
+    return HOLDING_REPLIES[variant % len(HOLDING_REPLIES)]
 
 
 class GeminiReplyOutput(BaseModel):
@@ -29,11 +46,12 @@ class GeminiReplyOutput(BaseModel):
     text: str = Field(min_length=1, max_length=300)
 
 
-async def generate_reply(canonical_question: str, samples: list[str], stream_facts: str) -> tuple[str, str]:
+async def generate_reply(canonical_question: str, samples: list[str], stream_facts: str,
+                         fallback_variant: int = 0) -> tuple[str, str]:
     """Return a validated short reply. On any provider/validation failure use a safe holding draft."""
     settings = get_settings()
     model = settings.gemini_model
-    safe_holding = holding_reply(canonical_question)
+    safe_holding = holding_reply(canonical_question, fallback_variant)
     if not settings.gemini_api_key or not stream_facts.strip():
         failure = "missing_key" if not settings.gemini_api_key else "no_stream_facts"
         logger.info("Reply suggestion usage model=%s tokens_in=unknown tokens_out=unknown latency_ms=0 failure=%s", model, failure)

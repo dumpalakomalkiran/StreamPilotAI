@@ -15,6 +15,8 @@
 - [ ] OAuth state/encryption/refresh.
 - [ ] EventSub chat/moderation and tombstones.
 - [ ] Overlay token, broadcast and reconnect.
+- [x] Challenge option editing retains focus while typing.
+- [x] Persisted active/completed challenge vote results restore after dashboard reload.
 
 ## Provider/live
 - [ ] Twitch scopes/token identity/subscription conditions verified from official docs.
@@ -23,6 +25,7 @@
 - [ ] Gemini model/schema/quota verified.
 - [ ] Real chat and moderation event observed.
 - [ ] Real vote updates overlay; timer closes; one announcement observed.
+- [ ] Protected overlay path remains verification-gated; its navigation is hidden in the current dashboard.
 
 ## Security/operations/submission
 - [ ] Broadcaster ownership, demo-mode safety, cookies/CSRF/CORS reviewed.
@@ -30,3 +33,4 @@
 - [ ] DB backup/migration plan.
 - [ ] Compose clean build and WebSocket proxy verified.
 - [ ] Secret scan; accurate demo evidence; owner approval for deploy/submission.
+- [x] Current dashboard poll-suggestion/native-poll controls removed; backend compatibility routes documented as non-UI.

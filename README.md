@@ -1,6 +1,6 @@
 # StreamPilot AI
 
-StreamPilot AI is a Twitch audience interaction co-pilot for gaming streamers: it turns live chat into a prioritized Smart Queue, groups differently phrased questions, surfaces possible audience polls, drafts grounded replies, and provides post-stream insights—while leaving consequential decisions in the streamer's hands.
+StreamPilot AI is a Twitch audience interaction co-pilot for gaming streamers: it turns live chat into a prioritized Smart Queue, groups differently phrased questions, drafts grounded replies, supports streamer-approved `!vote N` challenges, and provides post-stream insights—while leaving consequential decisions in the streamer's hands.
 
 ## The problem
 
@@ -11,9 +11,9 @@ Fast-moving streams make it hard to notice repeated questions and useful audienc
 - Twitch OAuth and EventSub chat intake, including supported message delete and chat-clear notifications.
 - Smart Interaction Queue with deterministic English/Hinglish question detection, same-session fuzzy grouping, optional batched Gemini grouping, viewer counts, priorities, filters, and answer/snooze/dismiss actions.
 - On-demand Gemini challenge suggestions and reply drafts. Stream facts can ground a reply; drafts remain editable and are sent only after an explicit streamer action.
-- Audience poll suggestions from competing chat preferences. The existing StreamPilot `!vote N` challenge flow remains available. Optional native Twitch polls are implemented behind an opt-in setting and require Affiliate/Partner eligibility and reauthorization.
+- Streamer-approved audience challenges using the existing `!vote N` chat flow, with timer closure and persisted results. The former AI/native poll dashboard controls are intentionally hidden; their backend compatibility routes are not part of the supported UI workflow.
 - Flag-only moderation suggestions, live community statistics, and cached post-stream recaps.
-- Protected OBS overlay for audience votes and an optional streamer-featured question.
+- Protected OBS overlay code for audience votes and an optional streamer-featured question; the Overlay Setup navigation item is currently hidden until a controlled OBS verification is completed.
 - Optional development replay, a small deterministic queue evaluation set, and a manual integration health check.
 
 ### Screenshots
@@ -22,7 +22,7 @@ Replace these placeholders with screenshots captured from a safe demo account. D
 
 ![Live Studio: raw Twitch chat beside Smart Queue — screenshot placeholder](docs/screenshots/live-studio-placeholder.png)
 
-![Poll suggestions and Insights — screenshot placeholder](docs/screenshots/polls-insights-placeholder.png)
+![Insights and Moderation — screenshot placeholder](docs/screenshots/insights-moderation-placeholder.png)
 
 ![OBS audience vote and question overlay — screenshot placeholder](docs/screenshots/overlay-placeholder.png)
 
@@ -37,7 +37,7 @@ flowchart LR
   API -->|REST and dashboard WebSocket| Dashboard[React + TypeScript dashboard]
   Dashboard -->|explicit streamer actions| API
   API -->|protected WebSocket| Overlay[OBS browser overlay]
-  API -->|explicit chat send or optional native poll| Twitch
+  API -->|explicit chat send| Twitch
 ```
 
 ## Run locally from a clean machine
@@ -54,7 +54,7 @@ flowchart LR
 
 1. Create an application in the [Twitch Developer Console](https://dev.twitch.tv/console/apps).
 2. For direct local development, register this exact OAuth redirect URI: `http://localhost:8000/auth/twitch/callback`.
-3. Copy the Twitch Client ID and Client Secret into the backend environment file only. The app's default scopes are `user:read:chat user:write:chat`. Native poll management is optional, disabled by default, and requires the streamer to opt in and reauthorize.
+3. Copy the Twitch Client ID and Client Secret into the backend environment file only. The app's default scopes are `user:read:chat user:write:chat`. Legacy native-poll management is disabled and hidden in the current dashboard; do not add its scope for the supported challenge workflow.
 
 ### Configure environment variables
 
@@ -75,7 +75,7 @@ Edit `backend/.env` and set:
 | `GEMINI_MODEL` | Model name available to your Gemini project; the current example defaults to `gemini-3.5-flash-lite`. |
 | `TWITCH_CLIENT_ID` / `TWITCH_CLIENT_SECRET` | Credentials from your Twitch application. |
 | `TWITCH_REDIRECT_URI` | Must exactly match the Twitch application callback; use the local URI above. |
-| `TWITCH_SCOPES` | Defaults to `user:read:chat user:write:chat`; do not add optional poll scope unless enabling native polls. |
+| `TWITCH_SCOPES` | Defaults to `user:read:chat user:write:chat`; do not add the legacy poll scope for the current workflow. |
 | `DEMO_MODE` | Defaults to `false`. Set `true` only for a local UI preview without Twitch authorization; never use it in production. |
 
 Keep `.env` files, keys, tokens, and local databases out of source control. Changing `APP_SECRET_KEY` can make previously encrypted Twitch tokens unreadable.
@@ -117,9 +117,11 @@ docker compose up --build
 
 Open `http://localhost:8080`. To stop the services, run `docker compose down`; the named database volume is retained. The current development environment did not have Docker available, so a clean Compose build has not been verified here.
 
-### Add the OBS browser source
+### OBS overlay (currently verification-gated)
 
-1. In StreamPilot, open **Overlay Setup** and choose **Generate overlay link**.
+The protected overlay implementation remains available, but its dashboard navigation is hidden while the OBS browser-source path is awaiting controlled verification. Do not treat the overlay as live-verified. When this path is enabled for a test build:
+
+1. Open **Overlay Setup** and choose **Generate overlay link**.
 2. In OBS, add a **Browser Source** and paste that private URL. Use your stream canvas dimensions (for example, 1920 × 1080).
 3. Confirm the overlay connects, then test a vote with a controlled channel before recording.
 
@@ -127,7 +129,7 @@ The URL contains a bearer token. Keep it private, do not commit it, and do not s
 
 ## Safety design
 
-- A Gemini suggestion is a draft. The streamer must review and approve a challenge before launch; poll suggestions also require streamer approval. Native Twitch poll creation is a separate explicit action.
+- A Gemini challenge suggestion is a draft. The streamer must review and approve it before launch. The supported live workflow uses the existing `!vote N` challenge path.
 - Gemini reply text is only sent after the streamer explicitly chooses **Send to chat**. Suggestions are bounded, schema-validated, and grounded in optional streamer-provided facts; unsupported facts use a safe holding reply.
 - Viewer chat is untrusted input, including text that looks like instructions. It is bounded, framed as data in model prompts, and model output is validated. No model tools are provided for queue grouping.
 - Moderation is flag-only. StreamPilot does not automatically ban, time out, or delete messages.
@@ -137,7 +139,7 @@ The URL contains a bearer token. Keep it private, do not commit it, and do not s
 ## Limitations and known issues
 
 - Automated provider tests use mocks. This repository does not claim a verified live Twitch/EventSub/Gemini end-to-end path; confirm actual chat delivery, moderation events, votes, overlay behavior, timer closure, and any chat announcement on a controlled channel.
-- Optional native Twitch polls are implemented but only available to Affiliate or Partner broadcasters with the opt-in scope. Live eligibility and creation remain to be verified.
+- Legacy poll-suggestion/native-poll backend routes remain in the source for compatibility, but the current dashboard does not fetch, display, approve, dismiss, or create those polls. They are not a current product claim.
 - The Smart Queue evaluation is a small curated sample, not a representative or held-out Twitch corpus. See [docs/EVALUATION.md](docs/EVALUATION.md).
 - SQLite, rate limiting, workers, token-refresh coordination, and WebSocket registries target a single backend process. Horizontal scaling requires shared coordination and a production-grade database.
 - No hosted deployment or public video has been performed by this repository workflow. The app does not control games or execute arbitrary game commands.

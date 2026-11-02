@@ -36,6 +36,10 @@
 
 - **ADR-017 Optional native Twitch polls:** use Twitch Helix native polls only after streamer opt-in plus reauthorization for `channel:manage:polls`. Never request this permission by default or create polls from AI/background paths. Check active polls in Twitch and StreamPilot before creation. Keep `!vote N` as the default and explicit eligibility fallback. Current Create Poll bounds are title <=60 characters, 2–5 choices of <=25 characters and duration 15–1800 seconds; map rate, scope, eligibility and active-poll failures safely.
 
+- **ADR-020 Dashboard native-poll visibility:** the current demo broadcaster is not Affiliate/Partner eligible, so native-poll controls are hidden from the dashboard to avoid presenting an unusable action. The backend implementation remains isolated for a future eligible broadcaster; the supported UI path is StreamPilot `!vote N`.
+
+- **ADR-021 AI poll suggestions:** remove the redundant AI poll-suggestion dashboard surface. The single Challenge suggestion editor is the supported streamer workflow; legacy poll-suggestion persistence/routes remain only for compatibility and are not fetched or surfaced by the dashboard.
+
 - **ADR-019 Live rehearsal safety:** keep live test credentials in local ignored files, require exact broadcaster identity and conservative message/time/Gemini caps, and separate offline validation from provider access. Never infer end-to-end success from local tests. The initial harness only validates preflight/report inputs; it must not claim a complete scenario run or expose its live action flags as a supported workflow until scripted actions, explicit approvals, evidence capture and recovery behavior are implemented and tested.
 # ADR-018: Isolate rehearsal replay and report evaluation conservatively
 

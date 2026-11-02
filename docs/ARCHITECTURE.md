@@ -5,10 +5,10 @@ flowchart TD
     V[Viewer Twitch Chat] --> T[Twitch Chat / EventSub]
     T --> B[FastAPI Backend]
     S[Streamer Dashboard] -->|REST actions| B
-    B --> A[Gemini Challenge Service]
+    B --> A[Gemini bounded services]
     B --> D[(SQLite / SQLAlchemy)]
     B --> W[WebSocket Broadcaster]
-    W --> O[React OBS Overlay]
+    W --> O[Protected overlay code]
     B -->|approved announcement| T
 ```
 
@@ -19,4 +19,4 @@ Trust boundaries:
 - Overlay receives display-safe data only.
 - Secrets remain in backend configuration.
 
-The local Vite server proxies `/api`, `/auth`, and `/ws` to FastAPI. The Compose frontend uses Nginx for the same proxy paths, while FastAPI remains private to the Compose network. SQLite lives in the named `streampilot-data` volume. Gemini and Twitch code paths are present, but real-service verification is still pending.
+The local Vite server proxies `/api`, `/auth`, and `/ws` to FastAPI. The Compose frontend uses Nginx for the same proxy paths, while FastAPI remains private to the Compose network. SQLite lives in the named `streampilot-data` volume. The current dashboard centers on Live Studio, Smart Queue, explicit challenge voting, reply drafts, Insights and flag-only Moderation. The protected overlay implementation and legacy poll endpoints remain in the backend but are hidden/verification-gated in the current UI. Gemini and Twitch code paths are present, but real-service verification is still pending.

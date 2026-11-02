@@ -14,7 +14,7 @@ StreamPilot AI is a Twitch companion for busy streamers. It watches incoming cha
 4. A deterministic filter ignores commands, emote-only lines, very short noise, bots, and the broadcaster's own messages.
 5. Questions and requests are grouped when several viewers ask the same thing in different words.
 6. The Smart Queue ranks groups so the streamer can focus on the most repeated and recent topics.
-7. The streamer can answer, snooze, dismiss, or feature a question on the OBS overlay.
+7. The streamer can answer, snooze, or dismiss a question. Overlay featuring is currently hidden pending controlled OBS verification.
 8. If desired, the streamer explicitly asks Gemini for a reply draft, edits it, and explicitly sends it.
 9. The streamer reviews and launches the single Challenge suggestion editor. Voting uses the existing StreamPilot `!vote N` flow.
 10. At stream end, the app records the end time and can create a cached recap from aggregate data.
@@ -29,7 +29,7 @@ StreamPilot AI is a Twitch companion for busy streamers. It watches incoming cha
 - Queue cards show the question, type, viewer count, priority, recency, and score explanation.
 - Keyboard shortcuts: `A` answer, `S` snooze, and `D` dismiss the focused card.
 - Connection status and automatic REST refresh after a WebSocket reconnect.
-- OBS browser overlay with challenge voting results and an optional “Question of the moment.”
+- Protected OBS browser overlay code exists for challenge results and an optional “Question of the moment,” but the dashboard feature control is currently hidden pending verification.
 - Overlay data is deliberately limited: it does not expose private member messages or moderation details.
 
 ### Twitch connection and chat
@@ -58,7 +58,7 @@ StreamPilot AI is a Twitch companion for busy streamers. It watches incoming cha
 - Stream facts/settings let the streamer provide safe information such as PC specifications, schedule, and social links.
 - Gemini receives the canonical question, up to five sample messages, and the stream facts as clearly delimited data.
 - Suggestions are short, structured, validated, and limited in length.
-- When the facts do not support an answer, the app uses a safe holding reply instead of inventing facts.
+- When the facts do not support an answer, the app uses a rotating safe holding reply instead of inventing facts, so repeated requests are not shown the exact same sentence every time.
 - Drafts can be edited, copied, discarded, or sent.
 - Only the explicit “Send to chat” action can call Twitch chat-send.
 - Successful sends create an audit record and mark the queue item answered.

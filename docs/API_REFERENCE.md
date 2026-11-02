@@ -48,7 +48,7 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' -H 'Content-Type: applic
 ```
 
 ## AI reply drafts (streamer-controlled)
-All endpoints are authenticated and broadcaster-scoped. `GET/PUT /api/settings/stream-facts` reads/writes up to 3000 characters of streamer-provided facts. Do not put credentials or private data there. Gemini is called only by `POST /api/interactions/{id}/response/suggest`, which considers the canonical question and up to five retained member messages. Chat is encoded as untrusted JSON, bounded, and never treated as instructions. If there are no stream facts, or Gemini cannot produce a valid structured answer grounded in the facts, the API saves a safe holding reply. Draft output is capped at 300 characters. A suggestion does not send chat.
+All endpoints are authenticated and broadcaster-scoped. `GET/PUT /api/settings/stream-facts` reads/writes up to 3000 characters of streamer-provided facts. Do not put credentials or private data there. Gemini is called only by `POST /api/interactions/{id}/response/suggest`, which considers the canonical question and up to five retained member messages. Chat is encoded as untrusted JSON, bounded, and never treated as instructions. If there are no stream facts, or Gemini cannot produce a valid structured answer grounded in the facts, the API saves a rotating safe holding reply rather than inventing facts. Draft output is capped at 300 characters. A suggestion does not send chat.
 
 - `POST /api/interactions/{id}/response/suggest`: create a reviewable draft.
 - `PATCH /api/responses/{id}` with `{"text":"..."}`: edit an unsent draft, up to Twitch's 500-character limit.
@@ -64,8 +64,8 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/a
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/responses/1/discard'
 ```
 
-## AI poll suggestions
-The periodic batched Gemini grouping request can include zero or more audience poll drafts; no second model request is made. The backend requires at least three distinct HMAC-keyed viewers across two or more non-overlapping preferences, validates supporting message IDs against the same broadcaster/session, and uses `POLL_SUGGESTION_COOLDOWN_SECONDS` (default 300). An active challenge or pending suggestion suppresses additional polls. A suggestion never starts automatically.
+## Legacy AI poll suggestions (backend compatibility; not in current dashboard)
+The periodic batched Gemini grouping request can include zero or more audience poll drafts; no second model request is made. The backend requires at least three distinct HMAC-keyed viewers across two or more non-overlapping preferences, validates supporting message IDs against the same broadcaster/session, and uses `POLL_SUGGESTION_COOLDOWN_SECONDS` (default 300). An active challenge or pending suggestion suppresses additional polls. A suggestion never starts automatically. These routes remain for compatibility, but the current React dashboard does not call or display them; the supported UI workflow is the Challenge suggestion editor and `!vote N`.
 
 - `GET /api/polls/suggestions`: pending suggestions for the authenticated broadcaster's current session, with retained supporting snippets.
 - `POST /api/polls/suggestions/{id}/approve` with `{"title":"Ranked or casual?","options":["Ranked","Casual"],"duration_seconds":30}`: saves streamer edits and creates an unapproved existing Challenge draft. The dashboard then invokes the normal challenge approve and launch endpoints; the existing timer, `!vote N`, overlay, and result calculation are reused.
@@ -109,10 +109,10 @@ curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/a
 curl -X POST -b 'stream_pilot_session=<SESSION_COOKIE>' 'http://localhost:8000/api/moderation/incidents/12/reviewed'
 ```
 
-## Optional native Twitch polls
-Native polls are disabled by default. Turning on `PUT /api/settings/native-polls` records the broadcaster's preference and reports whether Twitch reauthorization is required; the optional `channel:manage:polls` OAuth scope is requested only on a subsequent `/auth/twitch` authorization start while that broadcaster's authenticated session is present. Disabling the feature does not request the scope. Reauthorization replaces the stored OAuth grant with the selected scopes. Existing `!vote N` challenge creation remains available at all times.
+## Optional native Twitch polls (backend compatibility; hidden from current dashboard)
+Native polls are disabled by default and hidden from the current dashboard. The backend compatibility routes still record an opt-in preference and report whether Twitch reauthorization is required; the optional `channel:manage:polls` OAuth scope is requested only on a subsequent `/auth/twitch` authorization start while that broadcaster's authenticated session is present. Existing `!vote N` challenge creation remains the supported workflow.
 
-The current [Twitch Create Poll reference](https://dev.twitch.tv/docs/api/reference/#create-poll) requires a user token with `channel:manage:polls`; title max 60 characters; 2–5 choices; choice title max 25 characters; duration 15–1800 seconds. Twitch starts the poll immediately and allows one active poll at a time. Twitch returns 400 for invalid bounds or an already-running poll, 401 for missing scope/invalid identity/token, 403 when the channel is not Affiliate or Partner, and 429 for rate limiting. StreamPilot maps these to safe errors. The Affiliate/Partner error message explicitly offers the existing `!vote N` path; the dashboard starts that path only after the streamer chose “Approve & create Twitch poll.”
+The current [Twitch Create Poll reference](https://dev.twitch.tv/docs/api/reference/#create-poll) requires a user token with `channel:manage:polls`; title max 60 characters; 2–5 choices; choice title max 25 characters; duration 15–1800 seconds. Twitch starts the poll immediately and allows one active poll at a time. Twitch returns 400 for invalid bounds or an already-running poll, 401 for missing scope/invalid identity/token, 403 when the channel is not Affiliate or Partner, and 429 for rate limiting. StreamPilot maps these to safe errors. This backend compatibility path is not exposed by the current dashboard; the supported user workflow remains `!vote N`.
 
 - `GET /api/settings/native-polls`: read the opt-in and `reauthorization_required` state.
 - `PUT /api/settings/native-polls` with `{"enabled":true}`: enable and prompt for Twitch reauthorization; `false` disables the feature.

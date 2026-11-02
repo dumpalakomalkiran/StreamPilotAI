@@ -942,7 +942,16 @@ async def suggest_interaction_response(interaction_id: int = Path(ge=1), db: Ses
     ).order_by(Interaction.created_at.desc()).limit(5)).all()
     samples = [member.text[:300] for member in reversed(members)]
     facts_row = db.get(BroadcasterSettings, broadcaster_id)
-    text, model = await generate_reply(group.canonical_text, samples, facts_row.stream_facts if facts_row else "")
+    prior_suggestions = len(db.scalars(select(AIResponseSuggestion).where(
+        AIResponseSuggestion.group_id == group.id,
+        AIResponseSuggestion.broadcaster_id == broadcaster_id,
+    )).all())
+    text, model = await generate_reply(
+        group.canonical_text,
+        samples,
+        facts_row.stream_facts if facts_row else "",
+        prior_suggestions,
+    )
     suggestion = AIResponseSuggestion(group_id=group.id, broadcaster_id=broadcaster_id,
                                       text=text[:300], model=model, status="draft")
     db.add(suggestion)

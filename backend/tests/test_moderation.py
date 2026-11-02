@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.config import Settings
 from app.database import Base
 from app.models import AuditLog, ChatMessage, ModerationIncident, StreamSession
-from app.services import interactions
+from app.services import interactions, moderation
 from app.services.moderation import detect_deterministic_incident
 
 
@@ -72,6 +72,16 @@ def test_new_account_link_flags_but_returning_user_link_does_not(moderation_db):
     link = add_message(db, stream, "link-return", "returning", "here https://example.com")
     assert detect_deterministic_incident(db, broadcaster_id=stream.broadcaster_id,
                                          session=stream, message=link) is None
+
+
+def test_configured_bad_word_is_flagged_without_twitch_action(moderation_db, monkeypatch):
+    db, stream = moderation_db
+    monkeypatch.setattr(moderation, "get_settings", lambda: Settings(_env_file=None, moderation_bad_words="spoilerword"))
+    message = add_message(db, stream, "bad-word", "viewer-1", "that spoilerword is awful")
+    incident = detect_deterministic_incident(db, broadcaster_id=stream.broadcaster_id,
+                                             session=stream, message=message)
+    assert incident and incident.category == "harassment"
+    assert "configured review word" in incident.reason
 
 
 @pytest.mark.asyncio

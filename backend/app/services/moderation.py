@@ -8,10 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import ChatMessage, ModerationIncident, StreamSession
 
-REPEAT_COUNT = 4
-REPEAT_WINDOW_SECONDS = 20
+REPEAT_COUNT = 3
+REPEAT_WINDOW_SECONDS = 120
 URL_PATTERN = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
 WORD_PATTERN = re.compile(r"\S+")
 
@@ -74,6 +75,12 @@ def detect_deterministic_incident(
     ):
         category, severity, confidence = "link", "medium", 0.9
         reason = "Contains a link from an account with no earlier chat in this session."
+
+    if category is None:
+        configured_bad_words = [word.casefold().strip() for word in get_settings().moderation_bad_words.split(",") if word.strip()]
+        if configured_bad_words and any(re.search(rf"(?<!\w){re.escape(word)}(?!\w)", text.casefold()) for word in configured_bad_words):
+            category, severity, confidence = "harassment", "medium", 0.92
+            reason = "Contains a configured review word; streamer review is required."
 
     if category is None:
         cutoff = message.received_at - timedelta(seconds=REPEAT_WINDOW_SECONDS)

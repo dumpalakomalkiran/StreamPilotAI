@@ -20,7 +20,8 @@ Official docs: https://ai.google.dev/gemini-api/docs ; https://ai.google.dev/gem
 
 Official docs: https://dev.twitch.tv/docs/authentication/ ; https://dev.twitch.tv/docs/chat/ ; https://dev.twitch.tv/docs/chat/authenticating/ ; https://dev.twitch.tv/docs/eventsub/handling-websocket-events/ ; https://dev.twitch.tv/docs/api/reference/
 
-## OBS
+## OBS (verification-gated)
+The protected overlay implementation remains in the repository, but the current dashboard hides Overlay Setup until a controlled OBS run is approved and verified. Do not present this as a working live feature based on source code alone. When enabled for a test build:
 1. Generate and copy the protected overlay URL from the dashboard's Overlay Setup view.
 2. Add a Browser Source in OBS and paste the URL.
 3. Use a suitable canvas size such as 1920x1080.
