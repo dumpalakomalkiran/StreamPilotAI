@@ -1,28 +1,30 @@
-# StreamPilot AI — Live Synthetic E2E Report
+# StreamPilot AI — Live Synthetic E2E Report (historical run)
 
-- Run: `20261101T055230Z`
-- Started (UTC): `2026-11-01T05:52:30.244718+00:00`
-- Finished (UTC): `2026-11-01T05:52:30.248239+00:00`
+This report records a prior fail-closed rehearsal and is not a current verification certificate. Poll-suggestion/native-poll rows refer to backend compatibility scenarios; those controls are hidden from the current dashboard.
+
+- Run: `20261102T112413Z`
+- Started (UTC): `2026-11-02T11:24:13.373092+00:00`
+- Finished (UTC): `2026-11-02T11:24:19.318299+00:00`
 - Target identity gate: `False`
 - Messages sent: **0**
 - Gemini calls: **0**; tokens in/out: **0 / 0**
-- Estimated cost (USD): **None** (configurable estimate; see `config/gemini_pricing.json`)
-- Stop reason: offline_report_only
+- Estimated cost (USD): **0.0** (configurable estimate; see `config/gemini_pricing.json`)
+- Stop reason: preflight_blocked
 
 | Scenario | Status | Key evidence | Latency |
 |---|---|---|---:|
-| S0 Baseline live EventSub message flow | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S2 Question detection, grouping and negative filtering | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S3 Grounded AI reply and explicit send | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S4 Poll suggestion, approved challenge, votes and timer | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S5 Prompt injection, malformed input and rendering safety | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S7 Message deletion and chat clear regression guard | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S8 Session end, aggregate recap and caching | **BLOCKED** | Offline mode deliberately makes no Twitch, Gemini, or app API requests. | — |
-| S1 Authentication, overlay and broadcaster isolation | **NOT RUN** | Skipped by the selected scenario plan. | — |
-| S6 Flag-only moderation review | **NOT RUN** | Skipped by the selected scenario plan. | — |
-| S9 Restart, token rotation and Gemini degradation | **NOT RUN** | Skipped by the selected scenario plan. | — |
-| S10 Optional native Twitch polls | **NOT RUN** | Skipped by the selected scenario plan. | — |
-| S11 Dashboard Playwright screenshots and console errors | **NOT RUN** | Skipped by the selected scenario plan. | — |
+| S1 Authentication, overlay and broadcaster isolation | **NOT RUN** | Explicitly deferred by this focused demo run. | — |
+| S6 Flag-only moderation review | **NOT RUN** | Explicitly deferred by this focused demo run. | — |
+| S9 Restart, token rotation and Gemini degradation | **NOT RUN** | Explicitly deferred by this focused demo run. | — |
+| S10 Optional native Twitch polls | **NOT RUN** | Explicitly deferred by this focused demo run. | — |
+| S11 Dashboard Playwright screenshots and console errors | **NOT RUN** | Explicitly deferred by this focused demo run. | — |
+| S0 Baseline live EventSub message flow | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S2 Question detection, grouping and negative filtering | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S3 Grounded AI reply and explicit send | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S4 Poll suggestion, approved challenge, votes and timer | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S5 Prompt injection, malformed input and rendering safety | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S7 Message deletion and chat clear regression guard | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
+| S8 Session end, aggregate recap and caching | **BLOCKED** | LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent. | — |
 
 ## Bugs found and fixed
 
@@ -30,7 +32,7 @@ No live product defects were assessed; this was an offline preparation run.
 
 ## Open issues / blocked checks
 
-- Live run deferred by the owner; no provider/API requests or chat actions were made.
+- LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent.
 
 ## What this does NOT prove
 

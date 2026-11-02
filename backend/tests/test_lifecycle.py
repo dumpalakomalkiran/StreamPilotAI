@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,7 +10,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
 from app.main import app
-from app.models import ChatMessage, Interaction, InteractionGroup, StreamSession
+from app.models import Challenge, ChatMessage, Interaction, InteractionGroup, StreamSession
+from app.services.voting import challenge_start_message
 
 
 @pytest.fixture
@@ -94,6 +96,30 @@ def test_approval_launch_vote_change_and_close(client: TestClient) -> None:
     assert history.json()[0]["id"] == challenge_id
 
 
+def test_challenge_start_message_contains_vote_instructions(client: TestClient) -> None:
+    proposal = {
+        "title": "Route choice",
+        "question": "Which way should we go?",
+        "reason": "Demo proposal",
+        "duration_seconds": 60,
+        "source": "demo",
+        "options": [{"label": "Left"}, {"label": "Right"}],
+    }
+    created = client.post("/api/challenges", json=proposal)
+    assert created.status_code == 201
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    challenge = db.get(Challenge, created.json()["id"])
+    assert challenge is not None
+    message = challenge_start_message(challenge)
+    assert "Which way should we go?" in message
+    assert "!vote N" in message
+    assert "1:Left" in message and "2:Right" in message
+    assert len(message) <= 500
+    for _ in db_generator:
+        pass
+
+
 def test_interaction_api_lifecycle_and_broadcaster_scoping(client: TestClient) -> None:
     db_generator = app.dependency_overrides[get_db]()
     db = next(db_generator)
@@ -146,3 +172,60 @@ def test_interaction_api_lifecycle_and_broadcaster_scoping(client: TestClient) -
     assert snoozed.json()["status"] == "snoozed"
     assert snoozed.json()["snoozed_until"] is not None
     assert client.post(f"/api/interactions/{rows[2].id}/snooze", json={"minutes": 0}).status_code == 422
+
+
+def test_interaction_list_excludes_completed_sessions(client: TestClient) -> None:
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    active = StreamSession(broadcaster_id="demo", mode="live")
+    completed = StreamSession(broadcaster_id="demo", mode="live")
+    db.add_all([active, completed])
+    db.flush()
+    completed.ended_at = datetime.now(UTC)
+    for session, text in ((active, "How do I change settings?"), (completed, "What was the old question?") ):
+        group = InteractionGroup(
+            broadcaster_id="demo", session_id=session.id, kind="question",
+            canonical_text=text, normalized_text=text.casefold(), summary=text,
+            status="open", asker_count=1, message_count=1, priority_score=1.0,
+        )
+        db.add(group)
+    db.commit()
+    for _ in db_generator:
+        pass
+
+    response = client.get("/api/interactions")
+    assert response.status_code == 200
+    assert [item["canonical_text"] for item in response.json()] == ["How do I change settings?"]
+
+
+def test_interaction_list_repairs_stale_group_counts(client: TestClient) -> None:
+    db_generator = app.dependency_overrides[get_db]()
+    db = next(db_generator)
+    session = StreamSession(broadcaster_id="demo", mode="live")
+    db.add(session)
+    db.flush()
+    group = InteractionGroup(
+        broadcaster_id="demo", session_id=session.id, kind="question",
+        canonical_text="Can my GPU run this?", normalized_text="can my gpu run this",
+        summary="Can my GPU run this?", status="open", asker_count=0,
+        message_count=0, priority_score=0,
+    )
+    db.add(group)
+    db.flush()
+    db.add(ChatMessage(
+        event_id="stale-count-message", session_id=session.id, chatter_id="viewer-1",
+        display_name="Viewer", text="Can my GPU run this?",
+    ))
+    db.flush()
+    db.add(Interaction(
+        broadcaster_id="demo", group_id=group.id, chat_message_id="stale-count-message",
+        user_login_hash="viewer-hash", text="Can my GPU run this?",
+    ))
+    db.commit()
+    for _ in db_generator:
+        pass
+
+    response = client.get("/api/interactions")
+    assert response.status_code == 200
+    assert response.json()[0]["asker_count"] == 1
+    assert response.json()[0]["message_count"] == 1

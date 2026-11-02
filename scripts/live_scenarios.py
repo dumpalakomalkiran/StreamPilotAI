@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable
@@ -19,6 +20,14 @@ from live_e2e import (
     SCENARIOS,
     VIEWERS_FILE,
 )
+
+
+def _safe_exception_reason(exc: Exception) -> str:
+    """Keep diagnostics useful without putting tokens, headers, or provider bodies in reports."""
+    detail = " ".join(str(exc).split())[:240]
+    detail = re.sub(r"(?i)(bearer\s+|access_token[=: ]+|refresh_token[=: ]+|client_secret[=: ]+|api_key[=: ]+)[^\s,;]+", r"\1[REDACTED]", detail)
+    detail = re.sub(r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED]", detail)
+    return detail or "no safe diagnostic text"
 
 
 class ScenarioBlocked(RuntimeError):
@@ -165,12 +174,24 @@ class Driver:
         }
         response = None
         for attempt in range(3):
-            response = httpx.post(
-                "https://api.twitch.tv/helix/chat/messages",
-                headers={"Authorization": f"Bearer {viewer['access_token']}", "Client-Id": self.client_id},
-                json=request,
-                timeout=10,
-            )
+            try:
+                response = httpx.post(
+                    "https://api.twitch.tv/helix/chat/messages",
+                    headers={"Authorization": f"Bearer {viewer['access_token']}", "Client-Id": self.client_id},
+                    json=request,
+                    timeout=httpx.Timeout(10.0, connect=5.0, read=10.0, write=10.0, pool=5.0),
+                )
+            except httpx.TimeoutException as exc:
+                # A timeout leaves delivery status unknown. Never retry a chat
+                # message automatically: Twitch may have accepted it before
+                # the response was lost, and a retry could duplicate it.
+                raise ScenarioBlocked(
+                    "Twitch Send Chat Message timed out; delivery is unknown, so no automatic retry was made."
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise ScenarioBlocked(
+                    "Twitch Send Chat Message could not reach Helix; no automatic retry was made."
+                ) from exc
             if response.status_code != 429:
                 break
             reset_epoch = response.headers.get("Ratelimit-Reset")
@@ -212,6 +233,7 @@ class Driver:
         return evidence
 
     def preflight(self) -> dict[str, Any]:
+        self.preflight_phase = "initial checks"
         if not self.args.confirm_live:
             raise ScenarioBlocked("Live mode requires --confirm-live; no external request was made.")
         channel_login = os.environ.get("LIVE_TEST_CHANNEL_LOGIN", "").strip().casefold()
@@ -241,6 +263,7 @@ class Driver:
         if not settings.gemini_api_key:
             raise ScenarioBlocked("Gemini API key is not configured in backend settings.")
 
+        self.preflight_phase = "dashboard health/status request"
         self.api = self.api_client_factory(dashboard_cookie)
         self.api.get(f"{API_BASE}/api/health").raise_for_status()
         status = self.api.get(f"{API_BASE}/api/status")
@@ -253,13 +276,16 @@ class Driver:
         if auth.status_code != 200:
             raise ScenarioBlocked(f"Dashboard session was rejected (HTTP {auth.status_code}).")
 
+        self.preflight_phase = "broadcaster token refresh and Twitch identity validation"
         self.twitch_token, self.broadcaster_id, identity = self.twitch_credential()
         if identity["login"].casefold() != channel_login:
             raise ScenarioBlocked("LIVE_TEST_CHANNEL_LOGIN does not match the connected broadcaster; no chat will be sent.")
+        self.preflight_phase = "dashboard broadcaster identity comparison"
         api_identity = self.api_get("/api/auth/identity")
         if api_identity.get("broadcaster_id") != self.broadcaster_id:
             raise ScenarioBlocked("Dashboard session broadcaster does not match the Twitch identity validated for this run.")
         self.client_id = identity["client_id"]
+        self.preflight_phase = "Twitch EventSub subscription check"
         subscriptions = httpx.get("https://api.twitch.tv/helix/eventsub/subscriptions",
                                   headers={"Authorization": f"Bearer {self.twitch_token}", "Client-Id": self.client_id},
                                   params={"status": "enabled"}, timeout=10)
@@ -273,6 +299,7 @@ class Driver:
         token_file = VIEWERS_FILE
         if not token_file.exists():
             raise ScenarioBlocked("Authorize synthetic viewer accounts first with scripts/authorize_test_viewer.py.")
+        self.preflight_phase = "synthetic viewer token validation"
         stored = json.loads(token_file.read_text(encoding="utf-8"))
         self.viewers = self._validate_viewers(stored, settings.twitch_client_id)
         if not self.viewers:
@@ -280,6 +307,7 @@ class Driver:
         if len({viewer["user_id"] for viewer in self.viewers.values()}) < 3:
             self.doc["warnings"] = ["Fewer than three distinct synthetic viewers are authorized; S4 poll suggestion will be BLOCKED."]
 
+        self.preflight_phase = "fresh-session chat and database checks"
         analytics = self.api_get("/api/analytics/current")
         if not analytics.get("session_id"):
             raise ScenarioBlocked("No active StreamPilot session exists for this broadcaster.")
@@ -292,15 +320,19 @@ class Driver:
         self.db_check()
         # Authenticate Gemini before chat sends. Count this tiny direct call against the cap.
         self._check_limits(reserve_gemini=True)
-        from google import genai
-
         from app.services.ai_usage import record_ai_usage
+        from google import genai
 
         model = settings.gemini_model
         started = time.perf_counter()
-        response = genai.Client(api_key=settings.gemini_api_key,
-                                http_options={"timeout": min(10000, settings.ai_request_timeout_seconds * 1000)}).models.generate_content(
-                                    model=model, contents="Reply with the single word OK.")
+        self.preflight_phase = "Gemini preflight request"
+        gemini_client = genai.Client(
+            api_key=settings.gemini_api_key,
+            http_options={"timeout": min(10000, settings.ai_request_timeout_seconds * 1000)},
+        )
+        response = gemini_client.models.generate_content(
+            model=model, contents="Reply with the single word OK."
+        )
         if not response.text:
             raise ScenarioBlocked("Gemini preflight returned an empty response.")
         usage = getattr(response, "usage_metadata", None)
@@ -491,7 +523,10 @@ class Driver:
 
     def _run_s7(self) -> None:
         row = self.rows("S7-delete-me")[0]
-        sent = self.schedule_row(row)
+        # Focused reruns should start immediately; the checked-in offset is
+        # relative to the full scenario sequence and would otherwise add a
+        # four-minute wait before the deletion prompt.
+        sent = self.schedule_row(row, honor_offset=getattr(self.args, "only", None) != "S7")
         if not self.wait_chat_text(row["text"], timeout=30):
             raise ScenarioBlocked("Deletion target did not arrive through EventSub.")
         if not self._bounded_enter(
@@ -583,10 +618,14 @@ class Driver:
             self.doc["totals"]["estimated_cost_usd"] = None
 
     def run(self) -> int:
-        run_scenarios, not_run = ("S0", "S2", "S3", "S4", "S5", "S7", "S8"), ("S1", "S6", "S9", "S10", "S11")
+        all_live = ("S0", "S2", "S3", "S4", "S5", "S7", "S8")
+        selected = getattr(self.args, "only", None)
+        run_scenarios = (selected,) if selected else all_live
+        not_run = tuple(scenario_id for scenario_id in (*all_live, "S1", "S6", "S9", "S10", "S11")
+                        if scenario_id not in run_scenarios)
         for scenario_id in not_run:
             self.record(self.results, scenario_id, "NOT RUN", SCENARIOS[scenario_id],
-                        "Explicitly deferred by this focused demo run.")
+                        "Not selected for this focused run." if selected else "Explicitly deferred by this focused demo run.")
         try:
             preflight = self.preflight()
             self.doc["preflight"] = preflight
@@ -599,13 +638,25 @@ class Driver:
             self.finish()
             return 2
         except Exception as exc:  # noqa: BLE001 - omit provider payloads, headers and credentials
-            reason = f"Preflight failed ({type(exc).__name__}); details omitted from the report."
+            reason = f"Preflight failed during {getattr(self, 'preflight_phase', 'unknown phase')} ({type(exc).__name__}): {_safe_exception_reason(exc)}"
             self.doc["blockers"].append(reason)
             for scenario_id in run_scenarios:
                 self.record(self.results, scenario_id, "BLOCKED", SCENARIOS[scenario_id], reason)
             self.doc["stop_reason"] = "preflight_blocked"
             self.finish()
             return 2
+
+        if selected:
+            operation = {"S0": self._run_s0, "S2": self._run_s2, "S4": self._run_s4,
+                         "S5": self._run_s5, "S7": self._run_s7, "S8": self._run_s8}.get(selected)
+            if selected == "S3":
+                self.record(self.results, "S3", "BLOCKED", SCENARIOS["S3"],
+                            "Focused S3 rerun requires an existing grouped interaction ID; rerun S2 first.")
+                self.finish()
+                return 2
+            self._run_scenario(selected, operation)
+            self.finish()
+            return 1 if any(row["status"] == "FAIL" for row in self.results) else 0
 
         ok_s0 = self._run_scenario("S0", self._run_s0)
         if not ok_s0:
@@ -652,4 +703,19 @@ def run_live_scenarios(*, args, limits, script, doc, results, record, write_repo
         "check_db_writable": check_db_writable,
         "websocket_rejection": websocket_rejection,
     })
-    return driver.run()
+    try:
+        return driver.run()
+    except KeyboardInterrupt:
+        # Keep an operator stop auditable and avoid a traceback that could be
+        # mistaken for a product failure. No retry is attempted because an
+        # interrupted provider request may have an unknown delivery outcome.
+        driver._write_cost()
+        doc["stop_reason"] = "operator_interrupted"
+        doc["blockers"].append("Operator interrupted the run; any in-flight Twitch delivery has unknown outcome.")
+        doc["finished_at"] = datetime.now(UTC).isoformat()
+        doc["totals"]["messages_sent"] = driver.sent
+        write_report(doc)
+        print(f"Live scenario report: {ROOT / 'docs/LIVE_TEST_REPORT.md'}")
+        print(f"Structured results: {ROOT / 'docs/live_test_results.json'}")
+        print(f"Messages sent: {driver.sent}; stop reason: operator_interrupted")
+        return 130

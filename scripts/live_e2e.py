@@ -20,6 +20,16 @@ BACKEND = ROOT / "backend"
 sys.path.insert(0, str(BACKEND))
 load_dotenv(BACKEND / ".env", override=False)
 
+# The backend is normally launched from ``backend/`` while this harness is
+# launched from the repository root. Resolve the example relative SQLite URL
+# to the same backend database so the dashboard session and broadcaster
+# credential are checked against the database the API is actually using.
+_database_url = os.environ.get("DATABASE_URL", "")
+if _database_url.startswith("sqlite:///./"):
+    _relative_db = _database_url.removeprefix("sqlite:///./")
+    _resolved_db = (BACKEND / _relative_db).resolve().as_posix()
+    os.environ["DATABASE_URL"] = f"sqlite:///{_resolved_db}"
+
 API_BASE = os.environ.get("LIVE_TEST_API_BASE", "http://localhost:8000").rstrip("/")
 FRONTEND_BASE = os.environ.get("LIVE_TEST_FRONTEND_BASE", "http://localhost:5173").rstrip("/")
 VIEWERS_FILE = Path(os.environ.get("STREAM_PILOT_TEST_VIEWER_TOKENS", ROOT / "data/live_test_viewer_tokens.json"))
@@ -206,11 +216,10 @@ def _check_db_writable() -> None:
 
 def _test_isolated_tenant_db() -> dict:
     """Use a temporary database only; never create a synthetic broadcaster on Twitch or in the live DB."""
-    from sqlalchemy import create_engine, select
-    from sqlalchemy.orm import Session
-
     from app.database import Base
     from app.models import InteractionGroup, StreamSession
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import Session
 
     with tempfile.TemporaryDirectory(prefix="streampilot-live-scope-") as temp_dir:
         engine = create_engine(f"sqlite:///{Path(temp_dir) / 'scope.sqlite'}")
@@ -266,6 +275,8 @@ def _main() -> int:
                         help="Enable the bounded synthetic scenario run after all identity and safety gates pass.")
     parser.add_argument("--offline", action="store_true",
                         help="Validate checked-in inputs and write a report without contacting any provider or local API.")
+    parser.add_argument("--only", choices=("S0", "S2", "S3", "S4", "S5", "S7", "S8"),
+                        help="Run one focused live scenario after preflight (for example --only S7).")
     args = parser.parse_args()
 
     started_at = datetime.now(UTC).isoformat()

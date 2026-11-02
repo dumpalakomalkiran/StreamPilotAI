@@ -15,13 +15,12 @@ BACKEND = ROOT / "backend"
 os.chdir(BACKEND)  # Match the backend's .env and relative SQLite URL resolution.
 sys.path.insert(0, str(BACKEND))
 
-from sqlalchemy import func, select
-
 from app.config import get_settings
 from app.database import Base, SessionLocal, engine, upgrade_schema
 from app.models import Interaction, StreamSession
 from app.services.eventsub import _process_notification
 from app.services.interactions import resolve_pending
+from sqlalchemy import func, select
 
 SYNTHETIC_BROADCASTER_ID = "synthetic-replay"
 

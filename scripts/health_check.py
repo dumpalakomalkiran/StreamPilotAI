@@ -18,13 +18,12 @@ os.chdir(BACKEND)
 sys.path.insert(0, str(BACKEND))
 
 import httpx
-from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
-
 from app.config import get_settings
 from app.database import SessionLocal, engine
 from app.models import TwitchCredential
 from app.services.twitch_auth import refresh_access_token_if_needed
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 
 def report(name: str, passed: bool, detail: str) -> bool:

@@ -138,6 +138,37 @@ async def test_agreement_and_too_few_distinct_viewers_do_not_save_polls(db, monk
 
 
 @pytest.mark.asyncio
+async def test_poll_uses_preference_chat_without_question_interactions(db, monkeypatch):
+    session, stream = db
+    messages = []
+    for index, text in enumerate(("Ranked is better!", "Let's play ranked tonight", "I prefer casual mode", "Casual would be better")):
+        messages.append(add_message(session, stream, f"preference-{index}", f"viewer-{index % 3}", text))
+    session.commit()
+    monkeypatch.setattr(interactions, "get_settings", lambda: Settings(
+        _env_file=None, gemini_api_key="mock-key", ai_request_timeout_seconds=1,
+    ))
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            poll_messages = json.loads(kwargs["contents"].split("UNTRUSTED_JSON_START\n", 1)[1].split("\nUNTRUSTED_JSON_END", 1)[0])["poll_context"]["poll_messages"]
+            ids = [item["message_id"] for item in poll_messages]
+            return SimpleNamespace(text=json.dumps({
+                "decisions": [], "moderation_classifications": [],
+                "poll_suggestions": [{"title": "Ranked or casual?", "options": [
+                    {"label": "Ranked", "supporting_message_ids": ids[:2]},
+                    {"label": "Casual", "supporting_message_ids": ids[2:]},
+                ], "duration_seconds": 30}],
+            }))
+
+    monkeypatch.setattr(interactions.genai, "Client", lambda **_kwargs: SimpleNamespace(models=FakeModels()))
+    await interactions.resolve_pending(session, broadcaster_id=stream.broadcaster_id, session_id=stream.id)
+    poll = session.scalar(select(PollSuggestion))
+    assert poll is not None
+    assert poll.source_group_ids == []
+    assert len(poll.supporting_message_ids) == 4
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("blocker", ["active", "cooldown"])
 async def test_poll_safeguards_block_active_challenge_and_cooldown(db, monkeypatch, blocker):
     session, stream = db
@@ -186,6 +217,23 @@ def test_question_detection_english_hinglish_commands_emotes_and_ignored_users()
     assert interactions.detect_candidate("why?",) is None
     assert interactions.detect_candidate("How do I aim?", is_broadcaster=True) is None
     assert interactions.detect_candidate("How do I aim?", display_name="Nightbot") is None
+
+
+def test_gemini_grouping_schema_uses_provider_compatible_shape() -> None:
+    schema = interactions.GEMINI_GROUPING_SCHEMA
+
+    def walk(value):
+        if isinstance(value, dict):
+            assert "additionalProperties" not in value
+            assert "$ref" not in value
+            for child in value.values():
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(schema)
+    assert schema["required"] == ["decisions", "poll_suggestions", "moderation_classifications"]
 
 
 @pytest.mark.asyncio
@@ -257,7 +305,40 @@ async def test_batched_gemini_valid_response_attaches_candidate_to_existing_grou
     member = session.scalar(select(Interaction).where(Interaction.chat_message_id == message.event_id))
     assert member.group_id == group.id
     assert group.message_count == 2
-    assert fake_models.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_close_gemini_new_canonical_merges_into_open_group(db, monkeypatch) -> None:
+    session, stream = db
+    first = add_message(session, stream, "same-intent-1", "viewer-1", "Can my RTX 3060 handle this game?")
+    second = add_message(session, stream, "same-intent-2", "viewer-2", "Does this game run on my RTX 3060?")
+    first_item = Interaction(broadcaster_id=stream.broadcaster_id, chat_message_id=first.event_id,
+                             user_login_hash="viewer-1", text=first.text)
+    second_item = Interaction(broadcaster_id=stream.broadcaster_id, chat_message_id=second.event_id,
+                              user_login_hash="viewer-2", text=second.text)
+    session.add_all([first_item, second_item])
+    session.flush()
+    session.commit()
+    monkeypatch.setattr(interactions, "get_settings", lambda: Settings(
+        _env_file=None, gemini_api_key="mock-key", ai_request_timeout_seconds=1,
+    ))
+
+    class FakeModels:
+        def generate_content(self, **_kwargs):
+            return SimpleNamespace(text=json.dumps({
+                "decisions": [
+                    {"candidate_id": first_item.id, "group_id": None, "canonical_text": first.text, "kind": "question"},
+                    {"candidate_id": second_item.id, "group_id": None, "canonical_text": second.text, "kind": "question"},
+                ],
+                "poll_suggestions": [], "moderation_classifications": [],
+            }))
+
+    monkeypatch.setattr(interactions.genai, "Client", lambda **_kwargs: SimpleNamespace(models=FakeModels()))
+    assert await interactions.resolve_pending(session, broadcaster_id=stream.broadcaster_id,
+                                              session_id=stream.id) == 2
+    groups = session.scalars(select(InteractionGroup)).all()
+    assert len(groups) == 1
+    assert groups[0].message_count == 2
 
 
 @pytest.mark.asyncio

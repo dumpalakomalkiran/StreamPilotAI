@@ -206,17 +206,16 @@ def generate_summary_content(context: dict) -> tuple[dict, str]:
 
 def generate_and_store_summary(broadcaster_id: str, session_id: int, regenerate: bool = False) -> dict:
     with SessionLocal() as db:
-        cached = db.scalar(select(SessionSummary).where(SessionSummary.broadcaster_id == broadcaster_id,
-                                                        SessionSummary.session_id == session_id))
+        cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id))
         if cached and not regenerate:
             return {"session_id": session_id, "status": cached.status, "generated_at": cached.generated_at,
                     "content": cached.content}
         context = summary_context(db, broadcaster_id, session_id)
     content, model = generate_summary_content(context)
     with SessionLocal() as db:
-        cached = db.scalar(select(SessionSummary).where(SessionSummary.broadcaster_id == broadcaster_id,
-                                                        SessionSummary.session_id == session_id))
+        cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id))
         if cached:
+            cached.broadcaster_id = broadcaster_id
             cached.content, cached.model, cached.status, cached.generated_at = content, model, "complete", datetime.now(UTC)
         else:
             cached = SessionSummary(broadcaster_id=broadcaster_id, session_id=session_id,
@@ -234,18 +233,22 @@ async def generate_summary_async(broadcaster_id: str, session_id: int, regenerat
 def generate_summary_background(broadcaster_id: str, session_id: int) -> None:
     try:
         with SessionLocal() as db:
-            cached = db.scalar(select(SessionSummary).where(SessionSummary.broadcaster_id == broadcaster_id,
-                                                            SessionSummary.session_id == session_id))
+            cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id))
             if cached is None:
                 db.add(SessionSummary(broadcaster_id=broadcaster_id, session_id=session_id,
                                       content=None, status="pending", model="pending"))
+                db.commit()
+            else:
+                cached.broadcaster_id = broadcaster_id
+                cached.content = None
+                cached.status = "pending"
+                cached.model = "pending"
                 db.commit()
         generate_and_store_summary(broadcaster_id, session_id)
     except Exception as exc:  # noqa: BLE001 - background failure must not break session shutdown
         logger.warning("Session summary generation failed (session=%s, error=%s)", session_id, type(exc).__name__)
         with SessionLocal() as db:
-            cached = db.scalar(select(SessionSummary).where(SessionSummary.broadcaster_id == broadcaster_id,
-                                                            SessionSummary.session_id == session_id))
+            cached = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session_id))
             if cached:
                 cached.status = "failed"
                 db.commit()

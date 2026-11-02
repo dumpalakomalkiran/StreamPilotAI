@@ -26,14 +26,6 @@ vi.mock("./api", () => ({
     launchChallenge: vi.fn(),
     endChallenge: vi.fn(),
     listChallenges: vi.fn(() => Promise.resolve([])),
-    listPollSuggestions: vi.fn(() => Promise.resolve([])),
-    approvePollSuggestion: vi.fn(),
-    dismissPollSuggestion: vi.fn(() => Promise.resolve({})),
-    getNativePollSettings: vi.fn(() => Promise.resolve({ enabled: false, reauthorization_required: false, message: "Native Twitch polls are off." })),
-    saveNativePollSettings: vi.fn((enabled: boolean) => Promise.resolve({ enabled, reauthorization_required: enabled, message: "Reconnect Twitch." })),
-    listNativeTwitchPolls: vi.fn(() => Promise.resolve([])),
-    createNativeTwitchPoll: vi.fn(),
-    endNativeTwitchPoll: vi.fn(),
     listChatMessages: vi.fn(() => Promise.resolve([])),
     listInteractions: vi.fn(() => Promise.resolve([{
       id: 41, kind: "question", canonical_text: "Which GPU are you using?", summary: "GPU question",
@@ -113,6 +105,25 @@ describe("StreamPilot starter dashboard", () => {
     expect(screen.getByText("DEMO MODE")).toBeInTheDocument();
     expect(screen.getByText("Twitch isn't connected yet")).toBeInTheDocument();
   });
+  it("confirms session end and offers Twitch reconnect after success", async () => {
+    vi.stubGlobal("confirm", vi.fn(() => true));
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /end session/i }));
+    await waitFor(() => expect(api.endCurrentSession).toHaveBeenCalled());
+    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/End this stream session/i));
+    expect(await screen.findByText(/Session ended successfully/i)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /connect twitch/i })).toHaveAttribute("href", "/auth/twitch");
+    vi.unstubAllGlobals();
+  });
+  it("does not show End session when live authorization has no active session", async () => {
+    vi.mocked(api.getStatus).mockResolvedValueOnce({
+      demo_mode: false, gemini_configured: true, twitch_configured: true,
+      twitch_authorized: true, integrations_verified: false,
+    });
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("link", { name: /connect twitch/i })).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /end session/i })).not.toBeInTheDocument();
+  });
   it("sends the reviewed challenge through create, approve, and launch", async () => {
     vi.mocked(api.createChallenge).mockResolvedValue({ id: 7 } as never);
     vi.mocked(api.approveChallenge).mockResolvedValue({} as never);
@@ -129,68 +140,27 @@ describe("StreamPilot starter dashboard", () => {
     expect(api.approveChallenge).toHaveBeenCalledWith(7);
     expect(api.launchChallenge).toHaveBeenCalledWith(7);
   });
-  it("edits and approves a poll through the existing challenge launch flow", async () => {
-    const poll = {
-      id: 17, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"],
-      duration_seconds: 30, source_group_ids: [2, 3], status: "suggested" as const,
-      created_at: new Date().toISOString(), supporting_messages: [
-        { display_name: "ViewerA", text: "Should we play ranked?", created_at: new Date().toISOString() },
-        { display_name: "ViewerB", text: "Let's play casual!", created_at: new Date().toISOString() },
-      ],
-    };
-    const launched = {
-      id: 71, title: "What should we play?", question: "What should we play?", reason: "poll",
-      duration_seconds: 45, source: "gemini" as const, status: "active" as const, approved: true,
-      total_votes: 0, winning_option_id: null, options: [
-        { id: 1, label: "Ranked", description: "", position: 1, votes: 0 },
-        { id: 2, label: "Casual", description: "", position: 2, votes: 0 },
-      ],
-    };
-    vi.mocked(api.listPollSuggestions).mockResolvedValue([poll]);
-    vi.mocked(api.approvePollSuggestion).mockResolvedValue({ ...launched, status: "draft", approved: false });
-    vi.mocked(api.approveChallenge).mockResolvedValue({ ...launched, status: "draft", approved: true });
-    vi.mocked(api.launchChallenge).mockResolvedValue(launched);
-    const sockets: MockSocket[] = [];
-    class MockSocket {
-      onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null;
-      onerror: (() => void) | null = null; onclose: (() => void) | null = null;
-      constructor() { sockets.push(this); } close() { this.onclose?.(); }
-    }
-    vi.stubGlobal("WebSocket", MockSocket);
+  it("keeps focus while editing a challenge voting option", () => {
     render(<App />);
-    expect(await screen.findByDisplayValue("Ranked or casual?")).toBeInTheDocument();
-    expect(screen.getByText("ViewerA")).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText("POLL TITLE"), { target: { value: "What should we play?" } });
-    fireEvent.change(screen.getByLabelText("Poll option 2"), { target: { value: "Casual co-op" } });
-    fireEvent.change(screen.getByLabelText("Duration"), { target: { value: "45" } });
-    fireEvent.click(screen.getByRole("button", { name: /approve & start/i }));
-    await waitFor(() => expect(api.launchChallenge).toHaveBeenCalledWith(71));
-    expect(api.approvePollSuggestion).toHaveBeenCalledWith(17, {
-      title: "What should we play?", options: ["Ranked", "Casual co-op"], duration_seconds: 45,
-    });
-    expect(api.approveChallenge).toHaveBeenCalledWith(71);
-    expect(await screen.findByText(/Challenge launched through the backend/i)).toBeInTheDocument();
-    vi.unstubAllGlobals();
+    const option = screen.getByLabelText("Voting option 1");
+    option.focus();
+    fireEvent.change(option, { target: { value: "Choose the cave" } });
+    expect(document.activeElement).toBe(option);
   });
-  it("dismisses poll suggestions and shows the queue badge count", async () => {
-    const poll = {
-      id: 18, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"],
-      duration_seconds: 30, source_group_ids: [], status: "suggested" as const,
-      created_at: new Date().toISOString(), supporting_messages: [],
-    };
-    vi.mocked(api.listPollSuggestions).mockResolvedValue([poll]);
-    const sockets: MockSocket[] = [];
-    class MockSocket {
-      onopen: (() => void) | null = null; onmessage: ((event: { data: string }) => void) | null = null;
-      onerror: (() => void) | null = null; onclose: (() => void) | null = null;
-      constructor() { sockets.push(this); } close() { this.onclose?.(); }
-    }
-    vi.stubGlobal("WebSocket", MockSocket);
+  it("restores persisted vote results after a page reload", async () => {
+    vi.mocked(api.listChallenges).mockResolvedValueOnce([{
+      id: 19, session_id: 3, title: "Choose a route", question: "Which route?",
+      reason: "Viewer vote", duration_seconds: 30, source: "demo", status: "completed",
+      approved: true, total_votes: 7, winning_option_id: 2,
+      options: [
+        { id: 101, label: "Cave", description: "", position: 1, votes: 2 },
+        { id: 102, label: "Bridge", description: "", position: 2, votes: 5 },
+      ],
+    }]);
     render(<App />);
-    expect(await screen.findByLabelText("1 poll suggestions")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    await waitFor(() => expect(api.dismissPollSuggestion).toHaveBeenCalledWith(18));
-    vi.unstubAllGlobals();
+    expect(await screen.findByText("Final results from the existing vote records")).toBeInTheDocument();
+    expect(screen.getByText("7 backend votes")).toBeInTheDocument();
+    expect(screen.getByText("Bridge")).toBeInTheDocument();
   });
   it("renders the Insights analytics view", async () => {
     vi.mocked(api.getCurrentAnalytics).mockResolvedValue({
@@ -208,39 +178,13 @@ describe("StreamPilot starter dashboard", () => {
     expect(screen.getByText("Top unanswered questions")).toBeInTheDocument();
   });
 
-  it("enables native polls only from Settings and prompts Twitch reauthorization", async () => {
-    vi.mocked(api.getStatus).mockResolvedValueOnce({ demo_mode: false, gemini_configured: true, twitch_configured: true, twitch_authorized: true, integrations_verified: false });
-    vi.mocked(api.saveNativePollSettings).mockResolvedValueOnce({ enabled: true, reauthorization_required: true, message: "Reconnect Twitch." });
+  it("keeps native poll controls out of the dashboard", async () => {
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(await screen.findByText("Native Twitch polls")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Enable native polls" }));
-    expect(await screen.findByRole("link", { name: "Re-authorize Twitch" })).toHaveAttribute("href", "/auth/twitch");
-    expect(api.saveNativePollSettings).toHaveBeenCalledWith(true);
-  });
-
-  it("falls back to the existing vote challenge when Twitch rejects native poll eligibility", async () => {
-    const suggestion = { id: 33, session_id: 1, title: "Ranked or casual?", options: ["Ranked", "Casual"], duration_seconds: 30, source_group_ids: [], status: "suggested" as const, created_at: new Date().toISOString(), supporting_messages: [] };
-    const draft = { id: 80, title: suggestion.title, question: suggestion.title, reason: "poll", duration_seconds: 30, source: "gemini" as const, status: "draft" as const, approved: false, total_votes: 0, winning_option_id: null, options: [{ id: 1, label: "Ranked", description: "", position: 1, votes: 0 }, { id: 2, label: "Casual", description: "", position: 2, votes: 0 }] };
-    vi.mocked(api.getNativePollSettings).mockResolvedValue({ enabled: true, reauthorization_required: false, message: "Enabled" });
-    vi.mocked(api.listPollSuggestions).mockResolvedValue([suggestion]);
-    vi.mocked(api.approvePollSuggestion).mockResolvedValue(draft);
-    vi.mocked(api.createNativeTwitchPoll).mockRejectedValue(new Error("This Twitch channel must be an Affiliate or Partner to create native polls. Your approved suggestion can use the StreamPilot !vote N fallback."));
-    vi.mocked(api.approveChallenge).mockResolvedValue({ ...draft, approved: true });
-    vi.mocked(api.launchChallenge).mockResolvedValue({ ...draft, status: "active", approved: true });
-    const sockets: MockSocket[] = [];
-    class MockSocket { onopen: (() => void) | null = null; onmessage: ((event:{data:string})=>void) | null = null; onerror:(()=>void)|null=null; onclose:(()=>void)|null=null; constructor(){sockets.push(this);} close(){this.onclose?.();} }
-    vi.stubGlobal("WebSocket", MockSocket);
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    await screen.findByText("Native Twitch polls");
+    expect(await screen.findByText("Integration settings")).toBeInTheDocument();
+    expect(screen.queryByText("Native Twitch polls")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Live Studio" }));
-    expect(await screen.findByRole("button", { name: /approve & create twitch poll/i })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /approve & create twitch poll/i }));
-    await waitFor(() => expect(api.launchChallenge).toHaveBeenCalledWith(80));
-    expect(api.createNativeTwitchPoll).toHaveBeenCalledWith(33, 30);
-    expect(await screen.findByText(/Started this approved suggestion with StreamPilot !vote N instead/i)).toBeInTheDocument();
-    vi.unstubAllGlobals();
+    expect(screen.queryByRole("button", { name: /approve & create twitch poll/i })).not.toBeInTheDocument();
   });
 
   it("shows conservative moderation flags and lets the streamer dismiss one", async () => {

@@ -19,12 +19,15 @@ class Settings(BaseSettings):
     interaction_fuzzy_threshold: float = 0.78
     interaction_reopen_askers: int = 3
     poll_suggestion_cooldown_seconds: int = 300
+    moderation_bad_words: str = ""
     twitch_client_id: str = ""
     twitch_client_secret: str = ""
     twitch_redirect_uri: str = "http://localhost:8000/auth/twitch/callback"
     twitch_scopes: str = "user:read:chat user:write:chat"
     log_level: str = "INFO"
     demo_mode: bool = False
+    live_test_mode: bool = False
+    live_test_max_gemini_calls: int = 150
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

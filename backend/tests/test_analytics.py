@@ -165,6 +165,24 @@ def test_end_session_returns_without_waiting_for_summary_and_is_scoped(analytics
         assert db.get(StreamSession, session_id).ended_at is not None
 
 
+def test_end_session_reuses_stale_summary_row_without_unique_constraint_failure(analytics_client, monkeypatch):
+    client, sessions = analytics_client
+    session_id = seed_session(sessions, messages=0)
+    with sessions() as db:
+        db.add(SessionSummary(broadcaster_id="old-fixture-owner", session_id=session_id,
+                               content={"old": "data"}, status="complete", model="old-model"))
+        db.commit()
+    monkeypatch.setattr("app.main.generate_summary_background", lambda _broadcaster, _sid: None)
+    response = client.post("/api/analytics/current/end")
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending"
+    with sessions() as db:
+        summary = db.query(SessionSummary).filter_by(session_id=session_id).one()
+        assert summary.broadcaster_id == "broadcaster-1"
+        assert summary.content is None
+        assert summary.status == "pending"
+
+
 def test_summary_does_not_disclose_another_broadcasters_session(analytics_client):
     client, sessions = analytics_client
     with sessions() as db:

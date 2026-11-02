@@ -7,9 +7,17 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
+
 _lock = threading.RLock()
 _in_flight_calls = 0
 _TOKEN = re.compile(r"(?i)(AIza[0-9A-Za-z_-]{20,}|bearer\s+\S+|ya29\.[0-9A-Za-z_-]+)")
+
+
+def _live_test_settings():
+    from app.config import get_settings
+
+    return get_settings()
 
 
 def record_ai_usage(*, operation: str, model: str, tokens_in: int | None = None,
@@ -46,12 +54,13 @@ def record_ai_usage(*, operation: str, model: str, tokens_in: int | None = None,
 
 def live_test_gemini_budget_available() -> bool:
     """Enforce the harness cap inside the running API only when explicitly enabled."""
-    if os.environ.get("LIVE_TEST_MODE", "").strip().casefold() not in {"true", "1", "yes"}:
-        return True
     try:
-        limit = int(os.environ.get("LIVE_TEST_MAX_GEMINI_CALLS", "150"))
-    except ValueError:
+        settings = _live_test_settings()
+    except ValidationError:
         return False
+    if not settings.live_test_mode:
+        return True
+    limit = settings.live_test_max_gemini_calls
     if not 1 <= limit <= 1000:
         return False
     try:
@@ -86,7 +95,13 @@ def reserve_live_test_gemini_call() -> bool | None:
     if os.environ.get("LIVE_TEST_MODE", "").strip().casefold() not in {"true", "1", "yes"}:
         return None
     try:
-        limit = int(os.environ.get("LIVE_TEST_MAX_GEMINI_CALLS", "150"))
+        try:
+            settings = _live_test_settings()
+        except ValidationError:
+            return False
+        if not settings.live_test_mode:
+            return None
+        limit = settings.live_test_max_gemini_calls
         if not 1 <= limit <= 1000:
             return False
         with _lock:

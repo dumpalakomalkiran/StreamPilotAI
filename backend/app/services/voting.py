@@ -44,6 +44,16 @@ def challenge_result_message(challenge: Challenge) -> str:
     return f"Audience challenge result: {winner.label} won with {total} votes."
 
 
+def challenge_start_message(challenge: Challenge) -> str:
+    """Build the short Twitch announcement viewers need in order to participate."""
+    options = " ".join(
+        f"{option.position}:{option.label.strip()}"
+        for option in sorted(challenge.options, key=lambda item: item.position)
+    )
+    message = f"Audience challenge: {challenge.question.strip()} Vote with !vote N ({options})"
+    return message[:500]
+
+
 def create_challenge(db: Session, proposal: ChallengeProposal, broadcaster_id: str = "demo") -> Challenge:
     session = db.scalar(select(StreamSession).where(
         StreamSession.broadcaster_id == broadcaster_id, StreamSession.ended_at.is_(None)

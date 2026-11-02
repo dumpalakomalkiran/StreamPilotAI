@@ -175,3 +175,127 @@ Date/commit; files changed; commands and exact counts; tests added; live actions
 - Current feature status from the repository: challenge create/approve/launch/end/history, Twitch OAuth/EventSub chat/voting, protected overlay, queue grouping/lifecycle, AI reply draft/edit/explicit send, poll suggestions/approval through existing votes, analytics/recap, flag-only moderation, and optional native-poll opt-in are implemented with automated coverage. Replay/evaluation/demo script and health check exist; health check and live integrations are not verified in this run. The focused live driver is implemented but its scenarios remain unverified until the owner runs live mode. The broader auth/tenant, moderation, restart/resilience, native Twitch poll and Playwright screenshot scenarios are intentionally NOT RUN in this harness execution.
 - Checkout verification: `npm run typecheck`: passed; `npm run build`: passed (Vite 6.4.5, 1,587 modules transformed). The first frontend test attempt hit two 5-second Vitest timeouts under concurrent load; the two dashboard interaction tests were given 15-second limits and the serial rerun passed: `npm test -- --run`: **10 passed**. Backend `python -m pytest -q -p no:cacheprovider`: **91 passed**, 293 existing dependency/runtime deprecation warnings; `ruff check app tests ../scripts`: passed. See the offline report for the live scenario statuses; no provider behavior is marked verified.
 - No live mode, Twitch requests, real Gemini requests, chat sends, poll/challenge actions or session endings were performed by this task. Before live rehearsal, the owner must authorize non-broadcaster viewer accounts, enter Stream facts, start a fresh empty session, confirm chat is enabled, and personally complete the prompted delete/clear step.
+
+## Session-end regression fix — 2026-11-02
+- Diagnosed the live `POST /api/analytics/current/end` HTTP 500: the existing database had a `SessionSummary` row for the active session with a stale broadcaster ID. Because summaries are unique by `session_id`, filtering by both broadcaster and session missed the row and the insert raised a uniqueness error.
+- Session shutdown now reuses the session-scoped summary row, resets its content/status safely for the authenticated broadcaster, and the background recap path follows the same uniqueness rule. Added a regression test for the stale-row case.
+- Verification: `backend python -m pytest -q tests/test_analytics.py`: **7 passed**; `python -m ruff check backend/app/main.py backend/app/services/analytics.py`: passed. Restart/reload the backend before retrying the dashboard End session action.
+- Added a bounded `--only {S0,S2,S3,S4,S5,S7,S8}` selector to the live driver for focused reruns. A focused S7 run still requires a fresh active session and the same safety gates; no live rerun was performed by this change. Script compile and Ruff checks passed.
+- Dashboard cleanup: live-mode stat tiles now poll `GET /api/analytics/current` and display real message, chatter and open-question counts instead of illustrative hard-coded values; demo mode retains its labelled sample values. Frontend verification after this change: `npm test -- --run` **10 passed**, `npm run typecheck` passed, and `npm run build` passed (Vite 6.4.5).
+
+## Plain-language implementation overview — 2026-11-02
+- Added `docs/IMPLEMENTATION_OVERVIEW.md`, a non-technical guide covering the dashboard, Twitch/EventSub connection, Smart Interaction Queue, Gemini reply suggestions, poll suggestions, analytics/recaps, flag-only moderation, live-test tooling, safety controls, verification status, and current limitations.
+- Linked the new guide from `docs/HIGH_LEVEL_DOCUMENT.md`. No product behavior changed.
+- Added Word deliverables `docs/StreamPilot_AI_Implementation_Overview.docx` and `docs/StreamPilot_AI_Test_Scenarios.docx`. The test document gives setup instructions, local checks, S0-S11 step-by-step procedures, expected results, and evidence-recording rules. The bundled renderer could not run because LibreOffice is not installed in this environment; both DOCX packages were validated as readable documents with the expected paragraphs and tables.
+
+## Smart Queue session reset fix — 2026-11-02
+- Fixed `GET /api/interactions` to exclude groups from completed sessions. The dashboard now shows only the authenticated broadcaster's active-session queue, so starting a new session does not display old queue items.
+- Fixed queue count drift by recomputing derived asker/message counters from persisted Interaction rows before returning queue groups. Added regression coverage for stale zero counters and completed-session exclusion. Verification: `python -m pytest -q -p no:cacheprovider backend/tests/test_lifecycle.py`: **4 passed**; Ruff passed; `git diff --check` passed.
+
+## Challenge launch chat announcement fix — 2026-11-02
+- Live observation showed that launching a challenge updated the overlay but did not announce the question/options in Twitch chat; only the final result was sent at challenge end.
+- Added a bounded launch announcement containing the challenge question, numbered options, and `!vote N` instructions. It uses the existing Twitch chat send path and logs a warning if Twitch rejects the announcement without cancelling the already-launched challenge.
+- Added a test for message contents and the 500-character limit. Verification: lifecycle tests **5 passed**; Ruff passed; `git diff --check` passed. Live Twitch delivery still requires owner verification.
+
+## Session end confirmation and reconnect UI — 2026-11-02
+- Added a confirmation prompt before ending a session. After a successful end, the dashboard shows a success message, clears the active challenge state, and changes the action to `Connect Twitch` for the next session.
+- Added a frontend regression test covering confirmation, success feedback, and reconnect link. Verification: frontend Vitest **11 passed**, TypeScript build passed, and Vite production build passed.
+
+## S1 local authentication and tenant-safety check — 2026-11-02
+- Started the backend locally on `127.0.0.1:8000` with the existing non-demo configuration. Unauthenticated management requests to `/api/interactions`, `/api/chat/messages`, `/api/challenges`, and `POST /api/overlay/token` returned **401**. Unauthenticated `/ws/dashboard` and `/ws/overlay` handshakes were rejected with **403**.
+- Ran the isolated synthetic tenant fixture: two broadcaster records were created in a temporary database; broadcaster A could see one own group and `other_broadcaster_leaked=false`.
+- Verification: `python -m pytest -q backend/tests/test_health.py backend/tests/test_dashboard_socket.py backend/tests/test_database.py` — **11 passed**. The frontend stylesheet was also restored after a local truncation regression; the refreshed browser now renders the original dark dashboard layout again.
+- A fresh frontend dependency reinstall was attempted before the check; `npm ci` stopped with Windows `ENOTEMPTY` while removing the existing `frontend/node_modules/@esbuild/win32-x64` directory, so no new frontend gate result is claimed from that attempt. The previously recorded frontend Vitest/typecheck/build results remain the latest successful gates.
+- Limitation: this is a local safety check, not live Twitch/EventSub verification. Authenticated browser-cookie/session continuity and live provider identity remain owner-dependent.
+
+## Gemini interaction-batch grouping fix — 2026-11-02
+- Investigated the separate RTX 3060 queue cards using the backend AI usage log and a redacted provider reproduction. The interaction worker was reaching Gemini, but every batch was failing with HTTP **400 INVALID_ARGUMENT** because the Pydantic-generated schema included `additionalProperties`/`$ref` constructs unsupported by the Gemini response-schema endpoint. The worker then correctly fell back to the strict deterministic matcher (0.78 threshold), which scored the two paraphrases below that threshold and kept them separate.
+- Replaced only the provider-facing grouping schema with an explicit Gemini-compatible schema; returned JSON remains validated by `GroupingOutput` and its nested Pydantic models. The prompt now explicitly instructs Gemini to merge same-intent paraphrases such as the two RTX 3060 questions.
+- Verification: a live Gemini schema smoke call returned valid structured JSON after the change; `python -m pytest -q backend/tests/test_interactions.py` — **17 passed**; Ruff passed; `git diff --check` passed. The smoke call is provider reachability evidence only, not end-to-end Twitch queue verification.
+
+## Queue priority and paraphrase follow-up — 2026-11-02
+- Confirmed the screenshot's priority values are calculated, not capped: `priority = 5*ln(1+askers) + 3*recency + 2*ln(1+messages-1)`. The displayed 12.1 for 3 viewers/3 messages and 9.9 for 2 viewers/2 messages match the stored components. There is currently no hard maximum; the weights are explainability constants in `backend/app/services/interactions.py`.
+- Added a conservative provider-result merge for close paraphrases with a specific shared anchor (for example `RTX`/`3060`/`GPU`). This handles Gemini returning two new canonical groups for the two RTX 3060 run-capability questions without merging unrelated generic preferences such as ranked versus casual. Added regression coverage; interaction tests now **18 passed** and Ruff passed.
+- The current active database contains no ranked/casual preference messages and no `PollSuggestion` rows. The empty Poll suggestions panel is therefore expected for this session; poll generation requires at least three distinct viewer keys, two competing preferences, no active challenge, and the 20-second/8-candidate batch trigger plus the five-minute cooldown.
+
+## Poll suggestion trigger fix — 2026-11-02
+- Root cause: preference statements such as “Let’s queue ranked” are intentionally not question candidates, so they had no `Interaction` rows. The poll context incorrectly read only recent interactions and therefore sent no ranked/casual evidence to Gemini. It also refused suggestions when supporting messages had no queue group.
+- Fixed the batch snapshot to include up to 50 recent non-broadcaster chat messages directly, with hashed viewer keys and bounded text. Poll suggestions may now be saved with an empty `source_group_ids` list when they are supported by raw preference messages. No auto-start behavior changed.
+- Added a regression test for three preference-only chat messages and verified `backend/tests/test_interactions.py`: **19 passed**; Ruff and `git diff --check` passed. Restart the backend before testing; existing sessions need fresh ranked/casual messages after the restart.
+
+## Session-state and empty-vote UI cleanup — 2026-11-02
+- The Live Studio header previously showed `End session` whenever the dashboard loaded, even when Twitch was authorized but `/api/analytics/current` reported `session_id: null`. It now shows `End session` only for an active session; otherwise it shows `Connect Twitch`.
+- The live dashboard no longer displays fake sample vote bars, sample vote counts, or “Simulate preview vote” when there is no active challenge. It shows an explicit empty state. Demo mode retains the illustrative preview. `Streamer controls` was renamed `Safety guardrails` to clarify that it is explanatory safety information, not an action menu.
+- Verification: frontend Vitest **12 passed**, typecheck passed, production build passed (Vite 6.4.5). This change does not claim live Twitch verification.
+
+## Safety panel and connection-state clarity — 2026-11-02
+- Moved the safety guardrails panel from Live Studio into Settings. Live Studio now reserves its lower section for audience voting; Settings contains the approval, vote-validation and emergency-stop explanations.
+- Clarified the two previously similar orange sections: the authorization banner now says whether Twitch is merely authorized or an active StreamPilot session is running. The action state is no longer presented as a second conflicting connection status.
+- Verification: frontend Vitest **12 passed**, typecheck passed, production build passed. Refresh the Vite page to see the updated layout.
+
+## Live poll/UI verification correction — 2026-11-02
+- The current database inspection found **no active StreamPilot session** and no live `PollSuggestion` row. Therefore poll suggestions have **not** been verified in the current browser session; the earlier unit-test result must not be presented as live success.
+- Changed the full-width orange API error banner to a compact inline alert so it no longer looks like a second conflicting Twitch connection status. Frontend tests remain **12 passed**, typecheck passed, and `git diff --check` passed.
+- Required live sequence remains: click `Connect Twitch` to create/reconnect an active session, confirm `/api/analytics/current` returns a non-null `session_id`, then send competing preference messages from at least three distinct viewer accounts and wait for the batch window. Only a visible suggestion and persisted row will count as PASS.
+
+## Live Studio density and scrolling cleanup — 2026-11-02
+- Reduced the desktop Live Studio grid to two aligned columns (chat + Smart Queue) instead of letting the queue span the challenge row. Removed the queue's 560px minimum height and shortened the raw-chat viewport from 470px to 330px, so empty states and controls no longer create large blank regions.
+- Kept the challenge editor below the primary chat/queue work area and left Poll suggestions at the bottom as requested. Mobile still collapses to one column with a shorter chat viewport.
+- Verification: `npm test -- --run` — **12 passed**; `npm run typecheck` — passed; `npm run build` — passed (Vite 6.4.5, 1,587 modules transformed). This is a layout change only; it does not verify live Twitch or Gemini behavior.
+
+## Audience vote placement — 2026-11-02
+- Moved the existing Audience vote/results panel into the second row of the primary Live Studio grid, directly beside Challenge suggestion. It uses the same challenge/vote state and controls; no voting behavior changed. Poll suggestions remain below this work area.
+- Verification: frontend Vitest **12 passed**, typecheck passed, and production build passed (Vite 6.4.5). Live Twitch delivery remains unverified.
+
+## Removed non-functional onboarding chrome — 2026-11-02
+- Removed the unused “New to streaming?” sidebar card, duplicate top-right help button, and non-interactive profile gear/avatar affordance. The sidebar still identifies the workspace and environment; the top bar retains the live/demo status indicator.
+- No product actions or live integrations changed. Verification: frontend Vitest **12 passed**, typecheck passed, and production build passed (Vite 6.4.5).
+
+## Navigation and integration-status clarity — 2026-11-02
+- Removed the redundant Overview item from the primary navigation; Live Studio is the useful starting workspace, while Insights, Activity, Moderation, Overlay Setup and Settings remain available for their specific tasks.
+- Added a clear integration-status explanation to Settings. The backend intentionally keeps `integrations_verified` false until a complete controlled provider run is evidenced; Twitch authorization and observed local/live interactions are not silently promoted to full verification.
+- Verification: frontend Vitest **12 passed**; typecheck and production build passed (Vite 6.4.5). This does not change the backend verification policy or claim a complete live E2E pass.
+
+## Overlay navigation hidden pending verification — 2026-11-02
+- Removed `Overlay Setup` from the primary navigation because the OBS browser-source flow has not been validated in a real streaming setup. The existing protected overlay code remains in the repository for a later controlled verification; no backend behavior was removed.
+
+## Twitch-aware moderation repetition and configurable review words — 2026-11-02
+- Adjusted deterministic repetition detection for real Twitch delivery: exact duplicates are evaluated as three or more matching messages within 120 seconds, instead of requiring a fourth within 20 seconds (which Twitch commonly blocks before EventSub delivery). Existing tests remain valid.
+- Added optional `MODERATION_BAD_WORDS` configuration (comma-separated whole-word matches). Matching messages receive a medium-confidence harassment review flag; the list defaults empty, is never sent to Twitch, and does not trigger an automatic action. Added mocked coverage; moderation tests **9 passed**, Ruff passed.
+
+## Settings safety-first restructure — 2026-11-02
+- Rebuilt the Settings presentation so integration status and safety guardrails appear first, followed by Gemini/Twitch state, grounded Stream facts, optional native-poll settings and the secret-storage note. This removes the need to scroll past configuration before seeing the protections that govern AI actions.
+- Existing settings behavior is preserved; the previous inline branch remains unreachable behind the new settings panel while the shared workspace code is kept intact for a later cleanup pass.
+- Verification: frontend Vitest **12 passed**, typecheck passed, and production build passed (Vite 6.4.5). No provider behavior changed.
+
+## Poll suggestion live-trigger correction — 2026-11-02
+- Investigated the owner’s six ranked/casual messages: all six arrived in active session 6 from three viewer accounts, but no suggestion was created. The worker scan only woke for question/borderline interaction rows, so preference-only messages never triggered the shared Gemini batch.
+- Added a bounded preference-signal wake-up for recent ranked/casual/solo/duo/preference phrasing and relaxed validation to allow a viewer to express more than one preference; the requirement remains at least three distinct viewers and evidence for each option. Added overlap regression coverage.
+- Verification: interaction tests **19 passed**, Ruff passed. A controlled live provider call over the received messages returned and persisted poll suggestion **“Casual or Ranked?”** with options **Casual/Ranked** and status `suggested`. This is evidence of the current session’s poll trigger, not a native Twitch poll or automatic launch.
+
+## Native poll controls removed from dashboard — 2026-11-02
+- The live channel is not Affiliate/Partner eligible, so the dashboard no longer presents the native Twitch poll button, duration selector, tracked native-poll list, or native-poll settings. Approved poll suggestions now use the existing StreamPilot `!vote N` flow only.
+- The optional backend native-poll endpoints remain isolated for a future eligible channel; no Twitch scopes or backend behavior were changed in this UI-only removal.
+- Verification pending: frontend Vitest, typecheck and production build after this change.
+
+## AI poll suggestions removed from dashboard — 2026-11-02
+- Removed the redundant AI Poll suggestions panel and Smart Queue poll-count badge. Streamers now use the single explicit Challenge suggestion editor and approve/launch it through the existing `!vote N` flow.
+- The previously implemented poll-suggestion backend tables/routes remain available for compatibility with existing stored records, but the dashboard no longer fetches, displays, approves or dismisses AI poll suggestions. No automatic poll action is exposed.
+- Verification: frontend Vitest **9 passed**, typecheck and production build pending for this change.
+
+## Current product snapshot — 2026-11-03
+- Supported dashboard workflow: Live Studio raw chat + Smart Queue; explicit Gemini challenge suggestion; streamer edit/approve/launch; viewer `!vote N`; persisted active/completed vote results restored after page reload; explicit Gemini reply draft/edit/send; Insights; flag-only Moderation; Settings and session lifecycle.
+- The former AI Poll Suggestions panel, Smart Queue poll badge, native Twitch poll controls, and Overlay Setup navigation item are intentionally removed/hidden from the current UI. Their backend compatibility routes and protected overlay implementation remain in source but are not current user-facing or live-verified features.
+- The challenge editor uses stable React keys for voting-option inputs, so typing does not lose focus. Current frontend verification is **11 Vitest tests passed**, TypeScript typecheck passed, and production build passed (Vite 6.4.5; 1,586 modules transformed).
+- Integration status remains honest: configured credentials, OAuth authorization, or observed local/manual chat do not set `integrations_verified=true`. A complete controlled Twitch/EventSub/Gemini/action run with evidence is still required.
+- Synchronized the maintained Markdown references and all Word artifacts with the current UI and compatibility-only poll/overlay status. The two plain-language Word artifacts were rewritten for the current workflow; four older Word artifacts now carry a dated current-revision note so their historical content is not mistaken for the present UI. Structural text inspection confirmed the edits; bundled LibreOffice was unavailable, so DOCX PNG render QA could not run in this environment.
+
+## Challenge option editing focus fix — 2026-11-02
+- Fixed the challenge editor remounting voting-option inputs on every keystroke. The React list key now stays stable while the option value changes, so the streamer can type continuously without repeatedly clicking the field.
+- Added a regression test that changes Voting option 1 and verifies focus remains on the same input.
+- Verification: frontend Vitest **10 passed**; `npm run typecheck` passed; `npm run build` passed (Vite 6.4.5, 1,586 modules transformed). This is a local UI fix and does not change live Twitch/Gemini behavior.
+
+## Persist challenge results across reloads — 2026-11-02
+- Fixed the Live Studio vote panel resetting to the sample preview after a page reload. On startup, the dashboard now restores the newest persisted active challenge, or the newest completed challenge/result when no challenge is active, including its option counts and total votes.
+- Added the backend-provided `session_id` to the frontend challenge type and a regression test covering persisted completed results after reload.
+- Verification: frontend Vitest **11 passed**; `npm run typecheck` passed; `npm run build` passed (Vite 6.4.5, 1,586 modules transformed). Live Twitch persistence remains dependent on the backend/API being available and authenticated.

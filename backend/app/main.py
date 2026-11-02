@@ -1,7 +1,6 @@
 import asyncio
 import hashlib
 import logging
-import os
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -83,7 +82,12 @@ from app.services.dashboard_socket import connect as dashboard_connect
 from app.services.dashboard_socket import disconnect as dashboard_disconnect
 from app.services.dashboard_socket import interaction_payload as dashboard_interaction_payload
 from app.services.eventsub import run_eventsub
-from app.services.interactions import refresh_snoozed_groups, run_grouping_worker, score_group
+from app.services.interactions import (
+    _refresh_counts,
+    refresh_snoozed_groups,
+    run_grouping_worker,
+    score_group,
+)
 from app.services.overlay import broadcast as overlay_broadcast
 from app.services.overlay import connect as overlay_connect
 from app.services.overlay import disconnect as overlay_disconnect
@@ -98,6 +102,7 @@ from app.services.voting import (
     cast_vote,
     challenge_payload,
     challenge_result_message,
+    challenge_start_message,
     close_challenge,
     create_challenge,
     loaded_challenge,
@@ -216,7 +221,7 @@ def status(db: Session = Depends(get_db)) -> dict[str, object]:
         "twitch_configured": twitch_configured,
         "twitch_authorized": twitch_authorized,
         "eventsub_worker": eventsub_worker,
-        "live_test_mode": os.environ.get("LIVE_TEST_MODE", "").strip().casefold() in {"true", "1", "yes"},
+        "live_test_mode": settings.live_test_mode,
         "integrations_verified": False,
         "message": "Live service integrations remain unverified until authorized and tested against Twitch and Gemini."
     }
@@ -401,13 +406,18 @@ def end_current_session(background_tasks: BackgroundTasks, db: Session = Depends
     if session is None:
         raise HTTPException(status_code=404, detail="No active session")
     session.ended_at = datetime.now(UTC)
-    summary_row = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session.id,
-                                                          SessionSummary.broadcaster_id == broadcaster_id))
+    # SessionSummary is unique by session_id. Older databases can contain a
+    # stale broadcaster value for a reused fixture session; filtering by both
+    # columns would miss that row and make the insert fail with a 500.
+    summary_row = db.scalar(select(SessionSummary).where(SessionSummary.session_id == session.id))
     if summary_row is None:
         summary_row = SessionSummary(broadcaster_id=broadcaster_id, session_id=session.id,
                                      content=None, status="pending", model="pending")
         db.add(summary_row)
     else:
+        summary_row.broadcaster_id = broadcaster_id
+        summary_row.content = None
+        summary_row.model = "pending"
         summary_row.status = "pending"
     db.commit()
     background_tasks.add_task(generate_summary_background, broadcaster_id, session.id)
@@ -678,6 +688,7 @@ def list_interactions(
     ).where(
         InteractionGroup.broadcaster_id == broadcaster_id,
         StreamSession.broadcaster_id == broadcaster_id,
+        StreamSession.ended_at.is_(None),
     )
     if status:
         statement = statement.where(InteractionGroup.status == status)
@@ -691,6 +702,10 @@ def list_interactions(
     groups = db.scalars(statement).all()
     now = datetime.now(UTC)
     for group in groups:
+        # Recompute derived counters before returning them. This repairs stale
+        # counters left by an interrupted grouping/deletion transaction and
+        # keeps the dashboard truthful without deleting any chat history.
+        _refresh_counts(db, group)
         score_group(group, now)
     db.commit()
     groups.sort(key=lambda group: (
@@ -1175,11 +1190,22 @@ async def launch_challenge(
             raise HTTPException(status_code=409, detail="Another challenge is active") from exc
         active = loaded_challenge(db, challenge_id)
         session = db.get(StreamSession, active.session_id)
-        return challenge_payload(db, active), session.overlay_token_hash if session else None
+        return (
+            challenge_payload(db, active),
+            session.overlay_token_hash if session else None,
+            session.broadcaster_id if session and session.mode == "live" else None,
+            challenge_start_message(active) if session and session.mode == "live" else None,
+        )
 
-    payload, overlay_hash = await run_in_threadpool(launch_in_db)
+    payload, overlay_hash, live_broadcaster_id, announcement = await run_in_threadpool(launch_in_db)
     if overlay_hash:
         await overlay_broadcast(overlay_hash, {"type": "challenge.started", "challenge": payload})
+    if live_broadcaster_id and announcement:
+        sent = await send_chat_message(
+            TwitchCredential(broadcaster_id=live_broadcaster_id), announcement, db
+        )
+        if not sent:
+            logger.warning("Challenge launch announcement was not sent (challenge_id=%s)", challenge_id)
     return payload
 
 

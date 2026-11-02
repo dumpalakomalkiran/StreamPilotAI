@@ -1,5 +1,6 @@
 import json
 
+from app.config import get_settings
 from app.services import ai_usage
 
 
@@ -37,6 +38,7 @@ def test_live_test_budget_counts_actual_calls_only(tmp_path, monkeypatch):
     monkeypatch.setenv("STREAM_PILOT_AI_USAGE_LOG", str(path))
     monkeypatch.setenv("LIVE_TEST_MODE", "true")
     monkeypatch.setenv("LIVE_TEST_MAX_GEMINI_CALLS", "2")
+    get_settings.cache_clear()
 
     assert ai_usage.live_test_gemini_budget_available()
     ai_usage.record_ai_usage(operation="preflight", model="model", latency_ms=1)
@@ -46,20 +48,24 @@ def test_live_test_budget_counts_actual_calls_only(tmp_path, monkeypatch):
     assert ai_usage.live_test_gemini_budget_available()
     ai_usage.record_ai_usage(operation="grouping", model="model", latency_ms=1)
     assert not ai_usage.live_test_gemini_budget_available()
+    get_settings.cache_clear()
 
 
 def test_live_test_budget_rejects_invalid_cap(tmp_path, monkeypatch):
     monkeypatch.setenv("STREAM_PILOT_AI_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("LIVE_TEST_MODE", "true")
     monkeypatch.setenv("LIVE_TEST_MAX_GEMINI_CALLS", "not-a-number")
+    get_settings.cache_clear()
 
     assert not ai_usage.live_test_gemini_budget_available()
+    get_settings.cache_clear()
 
 
 def test_live_test_budget_reservations_are_atomic_and_released(tmp_path, monkeypatch):
     monkeypatch.setenv("STREAM_PILOT_AI_USAGE_LOG", str(tmp_path / "usage.jsonl"))
     monkeypatch.setenv("LIVE_TEST_MODE", "true")
     monkeypatch.setenv("LIVE_TEST_MAX_GEMINI_CALLS", "1")
+    get_settings.cache_clear()
 
     reservation = ai_usage.reserve_live_test_gemini_call()
     assert reservation is True
@@ -67,3 +73,4 @@ def test_live_test_budget_reservations_are_atomic_and_released(tmp_path, monkeyp
     ai_usage.record_ai_usage(operation="grouping", model="model", latency_ms=1)
     ai_usage.release_live_test_gemini_call(reservation)
     assert not ai_usage.live_test_gemini_budget_available()
+    get_settings.cache_clear()
