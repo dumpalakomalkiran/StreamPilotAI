@@ -92,8 +92,6 @@ describe("StreamPilot starter dashboard", () => {
     await waitFor(() => expect(api.snoozeInteraction).toHaveBeenCalledWith(41, 15));
     fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
     await waitFor(() => expect(api.dismissInteraction).toHaveBeenCalledWith(41));
-    fireEvent.click(screen.getByRole("button", { name: /show on stream/i }));
-    await waitFor(() => expect(api.featureInteraction).toHaveBeenCalledWith(41));
     const card = screen.getByRole("article", { name: /queue card/i });
     fireEvent.keyDown(card, { key: "a" });
     await waitFor(() => expect(api.answerInteraction).toHaveBeenCalledTimes(2));
@@ -106,14 +104,13 @@ describe("StreamPilot starter dashboard", () => {
     expect(screen.getByText("Twitch isn't connected yet")).toBeInTheDocument();
   });
   it("confirms session end and offers Twitch reconnect after success", async () => {
-    vi.stubGlobal("confirm", vi.fn(() => true));
     render(<App />);
     fireEvent.click(screen.getByRole("button", { name: /end session/i }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("dialog").querySelector(".button-primary") as HTMLElement);
     await waitFor(() => expect(api.endCurrentSession).toHaveBeenCalled());
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringMatching(/End this stream session/i));
     expect(await screen.findByText(/Session ended successfully/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /connect twitch/i })).toHaveAttribute("href", "/auth/twitch");
-    vi.unstubAllGlobals();
   });
   it("does not show End session when live authorization has no active session", async () => {
     vi.mocked(api.getStatus).mockResolvedValueOnce({

@@ -43,6 +43,7 @@ function Dashboard() {
   const [summarySessionId, setSummarySessionId] = useState<number | null>(null);
   const [sessionEnded, setSessionEnded] = useState(false);
   const [sessionMessage, setSessionMessage] = useState("");
+  const [showEndSessionModal, setShowEndSessionModal] = useState(false);
   const chatListRef = useRef<HTMLDivElement>(null);
   const nav = [
     { label: "Live Studio", icon: MonitorPlay },
@@ -159,7 +160,10 @@ function Dashboard() {
     }
   }
   async function endSession() {
-    if (!window.confirm("End this stream session? The current session will close and its recap will be prepared.")) return;
+    setShowEndSessionModal(true);
+  }
+  async function confirmEndSession() {
+    setShowEndSessionModal(false);
     if (challengeId !== null) {
       try {
         const completed = await api.endChallenge(challengeId);
@@ -236,6 +240,7 @@ function Dashboard() {
         </> : activeNav === "Insights" ? <Insights sessionId={summarySessionId}/> : activeNav === "Moderation" ? <Moderation/> : <WorkspacePage activeNav={activeNav} status={appStatus} overlayUrl={overlayUrl} onGenerateOverlay={generateOverlayLink} />}
       </div>
     </main>
+    {showEndSessionModal && <div className="modal-backdrop" role="presentation"><section className="confirm-modal" role="dialog" aria-modal="true" aria-labelledby="end-session-title" aria-describedby="end-session-description"><div className="confirm-modal-icon"><Activity size={19}/></div><h2 id="end-session-title">End this stream session?</h2><p id="end-session-description">The current session will close and its recap will be prepared. You can reconnect Twitch when you are ready to start a new session.</p><div className="confirm-modal-actions"><button className="button button-secondary" onClick={() => setShowEndSessionModal(false)}>Cancel</button><button className="button button-primary" onClick={() => void confirmEndSession()}>End session</button></div></section></div>}
   </div>;
 }
 function Stat({icon,label,value,note}:{icon:React.ReactNode;label:string;value:string;note:string}){return <div className="stat-card"><div className="stat-top"><span className="stat-icon">{icon}</span><span className="stat-note">{note}</span></div><div className="stat-value">{value}</div><div className="stat-label">{label}</div></div>}
